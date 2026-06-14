@@ -25,6 +25,7 @@ export default [
       ...securityNode.configs.recommended.rules,
       'no-unsanitized/method': 'error',
       'no-unsanitized/property': 'error',
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     },
   },
 ]

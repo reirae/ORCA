@@ -20,11 +20,3 @@ INSERT INTO messages (conversation_id, sender_id, content, sent_at) VALUES
 (1, 1, 'Sure, uploading now.', NOW()),
 (2, 2, 'Alice, the HVAC unit on level 2 is making unusual noises.', NOW()),
 (2, 4, 'Noted. I will schedule an inspection tomorrow.', NOW());
-
--- Audit logs
-INSERT INTO audit_logs (user_id, action_type, resource_type, resource_id, source_ip, timestamp) VALUES
-(1, 'LOGIN_SUCCESS', NULL, NULL, '192.168.1.1', NOW()),
-(2, 'LOGIN_SUCCESS', NULL, NULL, '192.168.1.2', NOW()),
-(3, 'LOGIN_SUCCESS', NULL, NULL, '192.168.1.3', NOW()),
-(1, 'MESSAGE_SENT', 'conversation', 1, '192.168.1.1', NOW()),
-(2, 'MESSAGE_SENT', 'conversation', 2, '192.168.1.2', NOW());

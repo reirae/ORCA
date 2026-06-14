@@ -117,15 +117,3 @@ CREATE TABLE IF NOT EXISTS annotations (
     FOREIGN KEY (file_id) REFERENCES files(id),
     FOREIGN KEY (author_id) REFERENCES users(id)
 );
-
-CREATE TABLE IF NOT EXISTS audit_logs (
-    id INT(11) NOT NULL AUTO_INCREMENT,
-    user_id INT(11),
-    action_type VARCHAR(100) NOT NULL,
-    resource_type VARCHAR(100),
-    resource_id INT(11),
-    source_ip VARCHAR(45),
-    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-);

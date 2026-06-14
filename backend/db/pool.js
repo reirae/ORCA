@@ -1,5 +1,5 @@
 const mysql = require('mysql2');
-const { log, logError } = require('../utils/consoleLogger');
+const { log, logError } = require('../utils/winstonLogger');
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -12,11 +12,11 @@ const pool = mysql.createPool({
 });
 
 pool.on('connection', (connection) => {
-  log(`[DB] ${new Date().toISOString()} - New connection established (id:`, connection.threadId);
+  log(`[DB] ${new Date().toISOString()} - New connection established`, { threadId: connection.threadId });
 });
 
 pool.on('error', (err) => {
-  logError(`[DB] ${new Date().toISOString()} - Pool error:`, err.message);
+  logError(`[DB] ${new Date().toISOString()} - Pool error`, { error: err.message });
 });
 
 module.exports = pool;

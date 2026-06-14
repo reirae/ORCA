@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const morgan = require('morgan');
 const pool = require('../db/pool');
+const { sanitizeLog } = require('./sanitize');
 
 // Ensure logs directory exists
 const logsDir = path.join(__dirname, '../logs');
@@ -22,9 +23,9 @@ const httpLogger = morgan('combined', { stream: accessLogStream });
 const auditLog = ({ userId = null, actionType, resourceType = null, resourceId = null, ip = null }) => {
   pool.query(
     'INSERT INTO audit_logs (user_id, action_type, resource_type, resource_id, source_ip) VALUES (?, ?, ?, ?, ?)',
-    [userId, actionType, resourceType, resourceId, ip],
+    [userId, sanitizeLog(actionType), resourceType ? sanitizeLog(resourceType) : null, resourceId, ip ? sanitizeLog(ip) : null],
     (err) => {
-      if (err) console.error(`[AUDIT] Failed to write audit log: ${err.message}`);
+      if (err) console.error(`[AUDIT] Failed to write audit log: ${sanitizeLog(err.message)}`);
     }
   );
 };

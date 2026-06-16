@@ -41,22 +41,25 @@ const auditLogger = createLogger({
   ],
 });
 
-const log = (message, meta = {}) => {
-  systemLogger.info(sanitizeLog(message), meta);
+const system = {
+  info: (message, meta = {}) => {
+    systemLogger.info(sanitizeLog(message), meta);
+  },
+  error: (message, meta = {}) => {
+    systemLogger.error(sanitizeLog(message), meta);
+  }
 };
 
-const logError = (message, meta = {}) => {
-  systemLogger.error(sanitizeLog(message), meta);
+const audit = {
+  log: ({ userId = null, actionType, resourceType = null, resourceId = null, ip = null }) => {
+    auditLogger.info(sanitizeLog(actionType), {
+      userId,
+      actionType: sanitizeLog(actionType),
+      resourceType: resourceType ? sanitizeLog(resourceType) : null,
+      resourceId,
+      ip: ip ? sanitizeLog(ip) : null,
+    });
+  }
 };
 
-const auditLog = ({ userId = null, actionType, resourceType = null, resourceId = null, ip = null }) => {
-  auditLogger.info(sanitizeLog(actionType), {
-    userId,
-    actionType: sanitizeLog(actionType),
-    resourceType: resourceType ? sanitizeLog(resourceType) : null,
-    resourceId,
-    ip: ip ? sanitizeLog(ip) : null,
-  });
-};
-
-module.exports = { log, logError, auditLog };
+module.exports = { system, audit };

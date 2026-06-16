@@ -1,6 +1,6 @@
 const app = require('./app');
-const { log } = require('./utils/winstonLogger');
+const { system } = require('./utils/winstonLogger');
 
 app.listen(3000, () => {
-  log(`[SERVER] ${new Date().toISOString()} - Server running on port 3000`);
+  system.info('Server running on port 3000', { context: 'server' });
 });

@@ -1,0 +1,190 @@
+/* ============================================================================
+   ORCA — design tokens & base styles
+   Identity: construction-site expert consultation. Hi-vis safety + sonar depth.
+   CSP-safe: system fonts only (no external font CDN — the prod CSP blocks it).
+   ========================================================================== */
+
+:root {
+  /* Depth ramp — the "underwater / sonar" base the brand sits on */
+  --orca-abyss: #0a0e14;
+  --orca-deep: #0f1722;
+  --orca-slate: #1a2533;
+  --orca-slate-2: #243245;
+  --orca-line: #2c3a4e;
+
+  /* Hi-vis — the single bold accent. Safety-vest amber. Use sparingly. */
+  --orca-hi: #ffb323;
+  --orca-hi-press: #e89c0a;
+  --orca-hi-soft: rgba(255, 179, 35, 0.12);
+
+  /* Signal — connection / "live" green, mirrors the chat status dot */
+  --orca-signal: #3dd68c;
+  --orca-alert: #ff5c5c;
+
+  /* Surface / text on dark */
+  --orca-paper: #f5f3ee;
+  --orca-ink: #e8ebf0;
+  --orca-muted: #8a94a3;
+  --orca-faint: #5a6675;
+
+  --orca-radius: 10px;
+  --orca-radius-sm: 6px;
+
+  --orca-sans: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --orca-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100svh;
+}
+
+body {
+  font-family: var(--orca-sans);
+  background: var(--orca-deep);
+  color: var(--orca-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* The skeleton centred #root in a 1126px box — reset that for full-bleed pages */
+#root {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  text-align: left;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+a {
+  color: var(--orca-hi);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* ---- Reusable atoms ------------------------------------------------------ */
+
+.orca-btn {
+  font: 600 16px/1 var(--orca-sans);
+  letter-spacing: 0.2px;
+  /* NFR-03: glove-friendly touch target — tall, generous hit area */
+  min-height: 52px;
+  padding: 0 26px;
+  border-radius: var(--orca-radius);
+  border: 1px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: transform 0.06s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.orca-btn:active {
+  transform: translateY(1px);
+}
+.orca-btn:focus-visible {
+  outline: 3px solid var(--orca-hi);
+  outline-offset: 2px;
+}
+
+.orca-btn--primary {
+  background: var(--orca-hi);
+  color: var(--orca-abyss);
+}
+.orca-btn--primary:hover {
+  background: var(--orca-hi-press);
+}
+.orca-btn--ghost {
+  background: transparent;
+  color: var(--orca-ink);
+  border-color: var(--orca-line);
+}
+.orca-btn--ghost:hover {
+  border-color: var(--orca-hi);
+  color: var(--orca-hi);
+}
+.orca-btn--block {
+  width: 100%;
+}
+
+.orca-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.orca-field label {
+  font: 600 13px/1 var(--orca-mono);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--orca-muted);
+}
+.orca-field input {
+  font: 400 16px/1.2 var(--orca-sans);
+  min-height: 52px; /* glove-friendly, NFR-03 */
+  padding: 0 16px;
+  background: var(--orca-abyss);
+  color: var(--orca-ink);
+  border: 1px solid var(--orca-line);
+  border-radius: var(--orca-radius-sm);
+}
+.orca-field input::placeholder {
+  color: var(--orca-faint);
+}
+.orca-field input:focus {
+  outline: none;
+  border-color: var(--orca-hi);
+  box-shadow: 0 0 0 3px var(--orca-hi-soft);
+}
+
+/* The "manifest" label style — site-paperwork mono codes (roles, FR ids) */
+.orca-code {
+  font: 600 12px/1 var(--orca-mono);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--orca-muted);
+}
+
+.orca-alert {
+  font: 500 14px/1.4 var(--orca-sans);
+  padding: 12px 14px;
+  border-radius: var(--orca-radius-sm);
+  border: 1px solid rgba(255, 92, 92, 0.4);
+  background: rgba(255, 92, 92, 0.1);
+  color: #ffd2d2;
+  margin-bottom: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---- Login split: collapse brand pane on small screens (NFR-03) --------- */
+.orca-login-split { display: flex; min-height: 100svh; }
+.orca-login-brand {
+  flex: 0 0 38%;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  padding: 40px;
+  border-right: 1px solid var(--orca-line);
+  background:
+    radial-gradient(700px 500px at 20% 10%, rgba(255, 179, 35, 0.1), transparent 55%),
+    var(--orca-slate);
+}
+@media (max-width: 720px) {
+  .orca-login-brand { display: none; }
+}

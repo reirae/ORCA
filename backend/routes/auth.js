@@ -101,9 +101,7 @@ router.post('/register', authLimiter, async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?)`,
         [name, email, passwordHash, role, isVerified, isApproved]
       );
-      audit.info('User registered', {
-        context: 'auth', action: 'register', userId: result.insertId, role, ip: req.ip,
-      });
+      audit.log({ userId: result.insertId, actionType: 'register', resourceType: 'user', ip: req.ip });
     } catch (err) {
       if (err.code === 'ER_DUP_ENTRY') {
         // Same response shape as success — don't reveal the email is taken.
@@ -139,10 +137,7 @@ async function handleLogin(req, res, { adminOnly }) {
 
     if (result !== AuthResult.SUCCESS) {
       // Log the REAL reason internally; return the GENERIC message externally.
-      audit.info('Login failed', {
-        context: 'auth', action: adminOnly ? 'admin_login' : 'login',
-        email, reason: result, ip: req.ip,
-      });
+      audit.log({ actionType: adminOnly ? 'admin_login_failed' : 'login_failed', resourceType: result, ip: req.ip });
       // NOT_VERIFIED / NOT_APPROVED get a specific (non-enumerating) message so
       // a legitimate user knows to check email / await approval. These are only
       // reachable AFTER a correct password, so they don't leak account info.
@@ -159,24 +154,17 @@ async function handleLogin(req, res, { adminOnly }) {
     //   - public /login must REJECT admins (they use the admin endpoint)
     //   - admin /login must REJECT non-admins
     if (adminOnly && user.role !== 'admin') {
-      audit.info('Admin endpoint used by non-admin', {
-        context: 'auth', action: 'admin_login', userId: user.id, role: user.role, ip: req.ip,
-      });
+      audit.log({ userId: user.id, actionType: 'admin_login_denied_non_admin', resourceType: user.role, ip: req.ip });
       return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
     }
     if (!adminOnly && user.role === 'admin') {
-      audit.info('Admin attempted public login endpoint', {
-        context: 'auth', action: 'login', userId: user.id, ip: req.ip,
-      });
+      audit.log({ userId: user.id, actionType: 'admin_used_public_login', ip: req.ip });
       return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
     }
 
     const { accessToken, refreshToken } = await createSession(user, clientMeta(req));
 
-    audit.info('Login success', {
-      context: 'auth', action: adminOnly ? 'admin_login' : 'login',
-      userId: user.id, role: user.role, ip: req.ip,
-    });
+    audit.log({ userId: user.id, actionType: adminOnly ? 'admin_login_success' : 'login_success', resourceType: user.role, ip: req.ip });
 
     return res.json({
       token: accessToken,

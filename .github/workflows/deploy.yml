@@ -7,6 +7,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -22,5 +23,5 @@ jobs:
             cd /home/student36/orca
             git fetch origin
             git checkout $GITHUB_SHA
-            docker compose -f docker-compose.prod.yml down
-            docker compose -f docker-compose.prod.yml up -d --build
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+            docker image prune -f

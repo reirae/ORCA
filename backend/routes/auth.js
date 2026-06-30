@@ -18,6 +18,14 @@ const { hasTotp, verifyTotp } = require('../utils/totp');
 
 const APP_URL = process.env.APP_URL || 'http://localhost';
 
+const REFRESH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'strict',
+  path: '/',
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+};
+
 /**
  * Auth routes.
  *
@@ -208,12 +216,12 @@ async function handleLogin(req, res, { adminOnly }) {
     }
 
     const { accessToken, refreshToken } = await createSession(user, clientMeta(req));
-
     audit.log({ userId: user.id, actionType: adminOnly ? 'admin_login_success' : 'login_success', resourceType: user.role, ip: req.ip });
+
+    res.cookie('__Host-orca.refresh-token', refreshToken, REFRESH_COOKIE_OPTIONS);
 
     return res.json({
       token: accessToken,
-      refreshToken,
       user: { id: user.id, name: user.name, role: user.role },
     });
   } catch (err) {
@@ -256,7 +264,7 @@ router.get('/session', authMiddlewareNoTouch, (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/logout', async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies['__Host-orca.refresh-token'];
     if (refreshToken) {
       await revokeSessionByRefreshToken(refreshToken);
     }
@@ -283,6 +291,13 @@ router.post('/logout', async (req, res) => {
       // Silently skip audit if token is already expired — logout is still valid.
     }
 
+    res.clearCookie('__Host-orca.refresh-token', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'strict',
+      path: '/',   // must match exactly how it was set
+    });
+
     // Always return success — logout should be idempotent and never error out.
     return res.json({ message: 'Logged out.' });
   } catch (err) {
@@ -298,7 +313,7 @@ router.post('/logout', async (req, res) => {
 // ---------------------------------------------------------------------------
 router.post('/refresh', async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    const refreshToken = req.cookies['__Host-orca.refresh-token'];
     if (!refreshToken) {
       return res.status(401).json({ error: 'Missing refresh token.' });
     }

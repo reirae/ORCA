@@ -72,7 +72,8 @@ export async function apiFetch(url, options = {}) {
   // before giving up or throwing a false error.
   if (response.status === 403 && mutating) {
     const errorData = await response.clone().json().catch(() => ({}));
-    if (errorData.error === "invalid csrf token" || errorData.message?.includes("csrf")) {
+    const errMsg = `${errorData.error || ""} ${errorData.message || ""}`.toLowerCase();
+    if (errMsg.includes("csrf")) {
       
       // Force fetch a clean, synchronized token
       await fetchCsrfToken();

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { apiFetch, STORAGE_KEY } from "../auth/api";
+import { apiFetch, fetchCsrfToken, STORAGE_KEY } from "../auth/api";
 import { OrcaWordmark } from "../components/Brand";
 
 /**
@@ -17,8 +17,6 @@ import { OrcaWordmark } from "../components/Brand";
  * the AuthContext uses, then does a hard redirect to /admin so AuthContext
  * re-reads the stored token and hydrates the session correctly.
  */
-
-const REFRESH_KEY = "orca.refresh";
 
 export default function AdminLogin() {
   const [email, setEmail]           = useState("");
@@ -51,21 +49,12 @@ export default function AdminLogin() {
           setTotpRequired(true);
           setError("Enter your 6-digit authenticator code below.");
         } else {
-          // Never expose which field was wrong (FR-01)
           setError(data.error || "Email or password is incorrect.");
         }
         return;
       }
-
-      // Persist tokens using the same sessionStorage keys as AuthContext so
-      // that once we hard-navigate to /admin the AuthProvider re-hydrates.
       sessionStorage.setItem(STORAGE_KEY, data.token);
-      if (data.refreshToken) {
-        sessionStorage.setItem(REFRESH_KEY, data.refreshToken);
-      }
-
-      // Hard navigation forces React to remount, which causes AuthContext to
-      // re-read sessionStorage and pick up the admin identity.
+      await fetchCsrfToken();
       window.location.replace("/adm/managementDashboard");
     } catch {
       setError("Unable to connect to the server. Please try again.");

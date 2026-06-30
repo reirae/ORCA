@@ -2,7 +2,6 @@
 // fast-refresh stays happy (that file must export only components).
 
 export const STORAGE_KEY  = "orca.session";
-const        REFRESH_KEY  = "orca.refresh";
 export const CSRF_KEY = "orca.csrf";
 
 // Call once on app startup to fetch and cache the CSRF token
@@ -57,7 +56,7 @@ export async function apiFetch(url, options = {}) {
   if (response.status === 401) {
     // Clear every stored credential so the user is fully signed out locally.
     sessionStorage.removeItem(STORAGE_KEY);
-    sessionStorage.removeItem(CSRF_KEY); // was REFRESH_KEY — no longer applicable
+    sessionStorage.removeItem(CSRF_KEY);
 
     // Redirect to the correct login page based on where the user is now.
     // Admin panel pages live under /adm/; everyone else uses /login.
@@ -71,6 +70,7 @@ export async function apiFetch(url, options = {}) {
       window.location.pathname === "/login";
 
     if (!alreadyOnLogin) {
+      await fetchCsrfToken(); // get a fresh token before redirecting
       window.location.replace(loginPath);
     }
   }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { OrcaWordmark } from "../components/Brand";
-import { apiFetch } from "../auth/api";
+import { apiFetch, fetchCsrfToken } from "../auth/api";
 
 /**
  * Register page — wired to POST /api/auth/register.
@@ -39,6 +39,11 @@ export default function Register() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (data.error === 'Invalid CSRF token') {
+          await fetchCsrfToken();
+          setError("Session refreshed — please try submitting again.");
+          return;
+        }
         throw new Error(data.error || "Registration failed. Please try again.");
       }
       setDone(true);

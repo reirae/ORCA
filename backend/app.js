@@ -18,7 +18,11 @@ const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
   },
   cookieName: '__Host-orca.x-csrf-token',
   cookieOptions: { sameSite: 'strict', secure: true, httpOnly: true, path: '/' },
-  getSessionIdentifier: (req) => req.cookies['__Host-orca.refresh-token'] || 'anonymous_context',
+  getSessionIdentifier: (req) =>
+    req.headers['x-refresh-token']
+    || req.body?.refreshToken
+    || req.cookies['__Host-orca.refresh-token']
+    || 'anonymous_context',
   getTokenFromRequest: (req) => req.headers['x-csrf-token'],
 });
 

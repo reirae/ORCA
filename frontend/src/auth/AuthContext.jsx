@@ -1,6 +1,6 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { AuthContext } from "./context";
-import { apiFetch, STORAGE_KEY, fetchCsrfToken, CSRF_KEY } from "./api";
+import { apiFetch, STORAGE_KEY, REFRESH_KEY, fetchCsrfToken, CSRF_KEY } from "./api";
 
 /**
  * AuthContext — the single source of truth for "who is logged in".
@@ -77,13 +77,17 @@ export function AuthProvider({ children }) {
   // purity rule (effects, unlike render, are allowed to be impure).
   const lastActivityRef = useRef(null);
 
-  const persist = useCallback((newToken) => {
+  const persist = useCallback((newToken, refreshToken) => {
     if (newToken) {
       sessionStorage.setItem(STORAGE_KEY, newToken);
+      if (refreshToken) {
+        sessionStorage.setItem(REFRESH_KEY, refreshToken);
+      }
       setToken(newToken);
       setUser(decodeJwt(newToken));
     } else {
       sessionStorage.removeItem(STORAGE_KEY);
+      sessionStorage.removeItem(REFRESH_KEY);
       setToken(null);
       setUser(null);
     }
@@ -115,8 +119,8 @@ export function AuthProvider({ children }) {
           }
           throw new Error(data.error || "Email or password is incorrect.");
         }
-        persist(data.token);
-        await fetchCsrfToken(); // refresh CSRF token now that refresh cookie exists
+        persist(data.token, data.refreshToken);
+        await fetchCsrfToken(); // refresh CSRF token now that refresh token exists
         lastActivityRef.current = Date.now();
         return data;
       } catch (err) {
@@ -136,10 +140,12 @@ export function AuthProvider({ children }) {
    * fails — the user should always be able to log out of this device.
    */
   const logout = useCallback(async () => {
+    const refreshToken = sessionStorage.getItem(REFRESH_KEY);
     try {
       await apiFetch("/api/auth/logout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(refreshToken ? { refreshToken } : {}),
       });
     } catch {
       // ignore network errors on logout
@@ -241,7 +247,14 @@ export function AuthProvider({ children }) {
 
       // Recently active — keep the access token fresh.
       try {
-        const res = await apiFetch("/api/auth/refresh", { method: "POST" });
+        const refreshToken = sessionStorage.getItem(REFRESH_KEY);
+        if (!refreshToken) return;
+
+        const res = await apiFetch("/api/auth/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refreshToken }),
+        });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.token) {
           sessionStorage.setItem(STORAGE_KEY, data.token);

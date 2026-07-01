@@ -2,15 +2,24 @@
 // fast-refresh stays happy (that file must export only components).
 
 export const STORAGE_KEY  = "orca.session";
+export const REFRESH_KEY  = "orca.refresh";
 export const CSRF_KEY = "orca.csrf";
 
 let csrfFetchPromise = null;
+
+function refreshHeaders(extra = {}) {
+  const refreshToken = sessionStorage.getItem(REFRESH_KEY);
+  return refreshToken ? { "x-refresh-token": refreshToken, ...extra } : extra;
+}
 
 // Call once on app startup to fetch and cache the CSRF token
 export function fetchCsrfToken() {
   if (csrfFetchPromise) return csrfFetchPromise;
 
-  csrfFetchPromise = fetch("/api/csrf-token", { credentials: "include" })
+  csrfFetchPromise = fetch("/api/csrf-token", {
+    credentials: "include",
+    headers: refreshHeaders(),
+  })
     .then(async (res) => {
       if (!res.ok) throw new Error("Failed to fetch CSRF token");
       const data = await res.json();
@@ -57,7 +66,7 @@ export async function apiFetch(url, options = {}) {
 
   let token = sessionStorage.getItem(STORAGE_KEY);
   let csrfToken = sessionStorage.getItem(CSRF_KEY);
-  let headers = { ...options.headers };
+  let headers = refreshHeaders({ ...options.headers });
 
   if (token && url.startsWith("/api")) {
     headers.Authorization = `Bearer ${token}`;
@@ -91,6 +100,7 @@ export async function apiFetch(url, options = {}) {
   if (response.status === 401) {
     // Clear every stored credential so the user is fully signed out locally.
     sessionStorage.removeItem(STORAGE_KEY);
+    sessionStorage.removeItem(REFRESH_KEY);
     sessionStorage.removeItem(CSRF_KEY);
 
     // Redirect to the correct login page based on where the user is now.

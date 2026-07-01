@@ -219,10 +219,19 @@ async function revokeSessionByRefreshToken(refreshToken) {
   );
 }
 
+/** Revoke the session tied to a specific access token (per-tab logout). */
+async function revokeSessionByAccessToken(accessToken) {
+  await pool.query(
+    `UPDATE sessions SET revoked = TRUE WHERE token_hash = ?`,
+    [hashToken(accessToken)]
+  );
+}
+
 module.exports = {
   authenticateUser,
   createSession,
   revokeSessionByRefreshToken,
+  revokeSessionByAccessToken,
   AuthResult,
   SOFT_LOCK_THRESHOLD,
   HARD_LOCK_THRESHOLD,

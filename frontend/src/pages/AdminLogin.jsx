@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { apiFetch, fetchCsrfToken, STORAGE_KEY } from "../auth/api";
+import { apiFetch, fetchCsrfToken, STORAGE_KEY, REFRESH_KEY } from "../auth/api";
 import { OrcaWordmark } from "../components/Brand";
 
 /**
@@ -54,6 +54,9 @@ export default function AdminLogin() {
         return;
       }
       sessionStorage.setItem(STORAGE_KEY, data.token);
+      if (data.refreshToken) {
+        sessionStorage.setItem(REFRESH_KEY, data.refreshToken);
+      }
       await fetchCsrfToken();
       window.location.replace("/adm/managementDashboard");
     } catch {

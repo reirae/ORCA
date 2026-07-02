@@ -6,7 +6,18 @@ import { apiFetch } from "../auth/api";
 /**
  * Inline chat + WebRTC video for one worker↔expert conversation.
  * Mounted inside ConsultExpert when a thread is selected from the sidebar.
+ *
+ * During a call either side can draw on the OTHER person's video to point
+ * things out (FR-11); strokes travel over the same authenticated signalling
+ * socket with normalized [0,1] coordinates and are never persisted (SR-04).
+ * Chat and call share the socket but not their fate: if the peer connection
+ * drops or the TURN fetch fails, the call tears down cleanly and messaging
+ * keeps working (SR-15).
  */
+
+// Stroke colors per role so both sides can tell who drew what.
+const STROKE_COLORS = { worker: "#22d3ee", expert: "#f59e0b" };
+const MAX_STROKE_POINTS = 512;
 export default function ConsultThread({ conversationId, counterpart }) {
   const convId = conversationId;
   const { user, token } = useAuth();
@@ -21,6 +32,8 @@ export default function ConsultThread({ conversationId, counterpart }) {
   const [threadError, setThreadError] = useState(null);
   const [showVideo, setShowVideo] = useState(false);
   const [needsPlayClick, setNeedsPlayClick] = useState(false);
+  const [canFlip, setCanFlip] = useState(false);   // device has >1 camera (mobile)
+  const [flipping, setFlipping] = useState(false);  // swap in progress
 
   const socketRef = useRef(null);
   const bottomRef = useRef(null);
@@ -30,10 +43,152 @@ export default function ConsultThread({ conversationId, counterpart }) {
   const remoteVideoRef = useRef(null);
   const iceServersRef = useRef([]);
   const pendingCandidatesRef = useRef([]);
+  const remoteCanvasRef = useRef(null); // overlay I draw on (their video)
+  const localCanvasRef = useRef(null);  // overlay showing their drawings on my feed
+  const myStrokesRef = useRef([]);
+  const peerStrokesRef = useRef([]);
+  const drawingRef = useRef(null); // in-progress stroke
+  const facingModeRef = useRef("user"); // "user" = front, "environment" = back
+  const flippingRef = useRef(false);    // re-entrancy guard for flipCamera
+
+  const myColor = STROKE_COLORS[user?.role] || STROKE_COLORS.worker;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // ── Live annotation overlay (FR-11) ──────────────────────────────
+  // I annotate the remote video (the feed I'm looking at); the peer renders
+  // my strokes over their local preview, which shows that same feed. The
+  // normalized coordinates make the strokes independent of tile size.
+  const redrawLayer = useCallback((canvas, strokes, liveStroke) => {
+    if (!canvas) return;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    const all = liveStroke ? [...strokes, liveStroke] : strokes;
+    for (const stroke of all) {
+      if (!stroke?.points || stroke.points.length < 2) continue;
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      stroke.points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x * w, p.y * h);
+        else ctx.lineTo(p.x * w, p.y * h);
+      });
+      ctx.stroke();
+    }
+  }, []);
+
+  const redrawAnnotations = useCallback(() => {
+    redrawLayer(remoteCanvasRef.current, myStrokesRef.current, drawingRef.current);
+    redrawLayer(localCanvasRef.current, peerStrokesRef.current, null);
+  }, [redrawLayer]);
+
+  const resetAnnotations = useCallback(() => {
+    myStrokesRef.current = [];
+    peerStrokesRef.current = [];
+    drawingRef.current = null;
+    redrawAnnotations();
+  }, [redrawAnnotations]);
+
+  const getLocalStream = useCallback(async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      // `ideal` (not `exact`) so desktops with a single, non-facing camera
+      // still succeed instead of throwing OverconstrainedError.
+      video: { facingMode: { ideal: facingModeRef.current } },
+      audio: { echoCancellation: true, noiseSuppression: true },
+    });
+    localStreamRef.current = stream;
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = stream;
+      await localVideoRef.current.play().catch(() => {});
+    }
+    // Only offer the flip control when the device actually has more than one
+    // camera (i.e. a phone). Device labels/ids are only populated after the
+    // getUserMedia grant above, so enumerate here rather than earlier.
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setCanFlip(devices.filter((d) => d.kind === "videoinput").length > 1);
+    } catch {
+      setCanFlip(false);
+    }
+    return stream;
+  }, []);
+
+  // Switch between front and back cameras mid-call (mobile). Uses
+  // RTCRtpSender.replaceTrack so the outgoing video is swapped WITHOUT
+  // renegotiation — the peer connection, the audio track, and the live
+  // annotation overlay (keyed to normalized coordinates) all keep working.
+  const flipCamera = useCallback(async () => {
+    const currentStream = localStreamRef.current;
+    if (flippingRef.current || !currentStream) return;
+    flippingRef.current = true;
+    setFlipping(true);
+    const nextMode = facingModeRef.current === "user" ? "environment" : "user";
+    try {
+      // Acquire ONLY a new video track; leave the existing audio track live so
+      // audio never drops during the swap.
+      const camStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: nextMode } },
+      });
+      const newVideoTrack = camStream.getVideoTracks()[0];
+      if (!newVideoTrack) throw new Error("no video track");
+
+      const sender = pcRef.current
+        ?.getSenders()
+        .find((sn) => sn.track && sn.track.kind === "video");
+      if (sender) await sender.replaceTrack(newVideoTrack);
+
+      // Update the local preview stream in place: drop+stop the old video
+      // track, splice in the new one, leave audio untouched.
+      const oldVideoTrack = currentStream.getVideoTracks()[0];
+      if (oldVideoTrack) {
+        currentStream.removeTrack(oldVideoTrack);
+        oldVideoTrack.stop();
+      }
+      currentStream.addTrack(newVideoTrack);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = currentStream;
+        await localVideoRef.current.play().catch(() => {});
+      }
+      facingModeRef.current = nextMode;
+      redrawAnnotations(); // aspect ratio may change; keep strokes aligned
+    } catch {
+      setCallNotice("Couldn't switch camera.");
+    } finally {
+      flippingRef.current = false;
+      setFlipping(false);
+    }
+  }, [redrawAnnotations]);
+
+  const flushPendingCandidates = useCallback(async () => {
+    for (const c of pendingCandidatesRef.current) {
+      await pcRef.current?.addIceCandidate(new RTCIceCandidate(c));
+    }
+    pendingCandidatesRef.current = [];
+  }, []);
+
+  const endCallMedia = useCallback(() => {
+    pcRef.current?.close();
+    pcRef.current = null;
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localStreamRef.current = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
+    setCallStatus("idle");
+    setNeedsPlayClick(false);
+    setCanFlip(false);
+    facingModeRef.current = "user"; // next call starts on the front camera
+    resetAnnotations();
+  }, [resetAnnotations]);
 
   const createPeerConnection = useCallback((servers) => {
     const pc = new RTCPeerConnection({ iceServers: servers });
@@ -59,46 +214,28 @@ export default function ConsultThread({ conversationId, counterpart }) {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") setCallStatus("in-call");
-      if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
-        setCallStatus("idle");
+      if (pc.connectionState === "connected") {
+        setCallStatus("in-call");
+        setCallNotice(null);
+        return;
+      }
+      if (pc.connectionState === "disconnected") {
+        // Often transient — ICE may recover on its own. Reassure, don't kill.
+        setCallNotice("Call connection unstable — text chat is unaffected.");
+        return;
+      }
+      // Graceful degradation (SR-15): the peer link is gone for good. Tear
+      // the call down cleanly; the chat socket is separate and keeps working.
+      if (["failed", "closed"].includes(pc.connectionState) && pcRef.current === pc) {
+        endCallMedia();
+        setShowVideo(false);
+        setCallNotice("Video call ended — text chat is still available.");
       }
     };
 
     pcRef.current = pc;
     return pc;
-  }, [convId]);
-
-  const getLocalStream = useCallback(async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: { echoCancellation: true, noiseSuppression: true },
-    });
-    localStreamRef.current = stream;
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = stream;
-      await localVideoRef.current.play().catch(() => {});
-    }
-    return stream;
-  }, []);
-
-  const flushPendingCandidates = useCallback(async () => {
-    for (const c of pendingCandidatesRef.current) {
-      await pcRef.current?.addIceCandidate(new RTCIceCandidate(c));
-    }
-    pendingCandidatesRef.current = [];
-  }, []);
-
-  const endCallMedia = useCallback(() => {
-    pcRef.current?.close();
-    pcRef.current = null;
-    localStreamRef.current?.getTracks().forEach((t) => t.stop());
-    localStreamRef.current = null;
-    if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
-    setCallStatus("idle");
-    setNeedsPlayClick(false);
-  }, []);
+  }, [convId, endCallMedia]);
 
   const handleOffer = useCallback(async (offer) => {
     setCallStatus("calling");
@@ -185,6 +322,23 @@ export default function ConsultThread({ conversationId, counterpart }) {
         handleRemoteCandidate(candidate).catch(() => {});
       });
 
+      socket.on("call:annotation", ({ stroke }) => {
+        if (cancelled || !Array.isArray(stroke?.points)) return;
+        peerStrokesRef.current.push(stroke);
+        redrawAnnotations();
+      });
+
+      socket.on("call:annotation-clear", () => {
+        if (!cancelled) resetAnnotations();
+      });
+
+      socket.on("call:ended", () => {
+        if (cancelled) return;
+        endCallMedia();
+        setShowVideo(false);
+        setCallNotice("Call ended — text chat remains available.");
+      });
+
       socket.on("call:user-left", ({ userId }) => {
         if (cancelled) return;
         endCallMedia();
@@ -218,7 +372,13 @@ export default function ConsultThread({ conversationId, counterpart }) {
       socket?.disconnect();
       socketRef.current = null;
     };
-  }, [token, convId, user?.id, handleOffer, handleAnswer, handleRemoteCandidate, endCallMedia]);
+  }, [token, convId, user?.id, handleOffer, handleAnswer, handleRemoteCandidate, endCallMedia, redrawAnnotations, resetAnnotations]);
+
+  // Annotation canvases size themselves at draw time — redraw when the layout changes
+  useEffect(() => {
+    window.addEventListener("resize", redrawAnnotations);
+    return () => window.removeEventListener("resize", redrawAnnotations);
+  }, [redrawAnnotations]);
 
   function sendMessage() {
     if (!input.trim() || !socketRef.current) return;
@@ -259,8 +419,51 @@ export default function ConsultThread({ conversationId, counterpart }) {
   }
 
   function hangUp() {
+    // Tell the other side to tear down now instead of waiting for ICE to
+    // time out — their chat keeps working either way (SR-15).
+    socketRef.current?.emit("call:end", { conversationId: convId });
     endCallMedia();
     setShowVideo(false);
+  }
+
+  // ── Annotation pointer handlers (remote video canvas) ────────────
+  function normPoint(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1),
+      y: Math.min(Math.max((e.clientY - rect.top) / rect.height, 0), 1),
+    };
+  }
+
+  function handleDrawStart(e) {
+    if (callStatus !== "in-call") return;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drawingRef.current = { color: myColor, points: [normPoint(e)] };
+  }
+
+  function handleDrawMove(e) {
+    const stroke = drawingRef.current;
+    if (!stroke || stroke.points.length >= MAX_STROKE_POINTS) return;
+    stroke.points.push(normPoint(e));
+    redrawAnnotations();
+  }
+
+  function handleDrawEnd() {
+    const stroke = drawingRef.current;
+    drawingRef.current = null;
+    if (!stroke) return;
+    if (stroke.points.length < 2) {
+      redrawAnnotations();
+      return;
+    }
+    myStrokesRef.current.push(stroke);
+    redrawAnnotations();
+    socketRef.current?.emit("call:annotation", { conversationId: convId, stroke });
+  }
+
+  function clearAnnotations() {
+    resetAnnotations();
+    socketRef.current?.emit("call:annotation-clear", { conversationId: convId });
   }
 
   return (
@@ -296,24 +499,56 @@ export default function ConsultThread({ conversationId, counterpart }) {
       {threadError && <div style={s.error}>{threadError}</div>}
 
       {showVideo && (
-        <div style={s.videoGrid}>
-          <div style={s.videoBox}>
-            <video ref={localVideoRef} style={s.video} autoPlay muted playsInline />
-            <span style={s.videoLabel}>You</span>
+        <>
+          <div style={s.videoGrid}>
+            <div style={s.videoBox}>
+              <video ref={localVideoRef} style={s.video} autoPlay muted playsInline />
+              <canvas ref={localCanvasRef} style={s.annotationCanvas(false)} />
+              <span style={s.videoLabel}>You</span>
+              {canFlip && (
+                <button
+                  style={s.flipBtn}
+                  onClick={flipCamera}
+                  disabled={flipping}
+                  title="Switch camera"
+                  aria-label="Switch camera"
+                >
+                  {flipping ? "…" : "⟳ Flip"}
+                </button>
+              )}
+            </div>
+            <div style={s.videoBox}>
+              <video ref={remoteVideoRef} style={s.video} autoPlay playsInline />
+              <canvas
+                ref={remoteCanvasRef}
+                style={s.annotationCanvas(callStatus === "in-call")}
+                onPointerDown={handleDrawStart}
+                onPointerMove={handleDrawMove}
+                onPointerUp={handleDrawEnd}
+                onPointerCancel={handleDrawEnd}
+              />
+              <span style={s.videoLabel}>{remoteUserName || counterpart?.name || "Waiting…"}</span>
+              {needsPlayClick && (
+                <button
+                  style={s.playBtn}
+                  onClick={() => remoteVideoRef.current?.play().then(() => setNeedsPlayClick(false))}
+                >
+                  Click to play video
+                </button>
+              )}
+            </div>
           </div>
-          <div style={s.videoBox}>
-            <video ref={remoteVideoRef} style={s.video} autoPlay playsInline />
-            <span style={s.videoLabel}>{remoteUserName || counterpart?.name || "Waiting…"}</span>
-            {needsPlayClick && (
-              <button
-                style={s.playBtn}
-                onClick={() => remoteVideoRef.current?.play().then(() => setNeedsPlayClick(false))}
-              >
-                Click to play video
+          {callStatus === "in-call" && (
+            <div style={s.annotationBar}>
+              <span style={s.annotationHint}>
+                Draw on {counterpart?.name ? `${counterpart.name}'s` : "their"} video to point things out — they see it live.
+              </span>
+              <button style={s.annotationClearBtn} onClick={clearAnnotations}>
+                Clear drawings
               </button>
-            )}
-          </div>
-        </div>
+            </div>
+          )}
+        </>
       )}
 
       <div style={s.chatBox}>
@@ -374,6 +609,16 @@ const s = {
   videoBox: { background: "#111", borderRadius: 10, overflow: "hidden", aspectRatio: "16/10", position: "relative" },
   video: { width: "100%", height: "100%", objectFit: "cover" },
   videoLabel: { position: "absolute", bottom: 6, left: 6, color: "#fff", fontSize: 10, background: "rgba(0,0,0,0.55)", padding: "2px 6px", borderRadius: 4 },
+  flipBtn: { position: "absolute", top: 6, right: 6, padding: "4px 8px", borderRadius: 6, border: "none", background: "rgba(0,0,0,0.55)", color: "#fff", fontSize: 11, cursor: "pointer", touchAction: "manipulation" },
+  annotationCanvas: (drawable) => ({
+    position: "absolute", inset: 0, width: "100%", height: "100%",
+    pointerEvents: drawable ? "auto" : "none",
+    cursor: drawable ? "crosshair" : "default",
+    touchAction: "none",
+  }),
+  annotationBar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 20px 0", flexShrink: 0 },
+  annotationHint: { fontSize: 11, color: "var(--orca-muted)" },
+  annotationClearBtn: { padding: "4px 10px", borderRadius: 6, border: "1px solid var(--orca-line)", background: "transparent", color: "var(--orca-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 },
   playBtn: { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", padding: "8px 12px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", fontSize: 12, cursor: "pointer" },
   chatBox: { flex: 1, overflowY: "auto", padding: 16, margin: "12px 20px", border: "1px solid var(--orca-line)", borderRadius: 10, background: "var(--orca-abyss)", minHeight: 0 },
   emptyChat: { textAlign: "center", color: "var(--orca-faint)", fontSize: 14, marginTop: 40 },

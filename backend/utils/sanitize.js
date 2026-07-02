@@ -2,14 +2,28 @@ const path = require('path');
 
 const sanitizeLog = (value) => String(value).replace(/[\r\n]/g, ' ');
 
-// Intentionally matches control characters: sanitizeText strips them from user
-// input so they cannot smuggle terminal escapes or corrupt stored text.
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+// Control-character codes stripped from user input so they can't smuggle
+// terminal escapes or corrupt stored text: C0 controls except tab (0x09),
+// newline (0x0A) and carriage return (0x0D), plus DEL (0x7F). Checked by code
+// point rather than a regex literal, which keeps raw control characters out of
+// the source and avoids the no-control-regex lint / code-scanning finding.
+function isStrippableControlChar(code) {
+  return (
+    code <= 0x08 ||
+    code === 0x0b ||
+    code === 0x0c ||
+    (code >= 0x0e && code <= 0x1f) ||
+    code === 0x7f
+  );
+}
 
 function sanitizeText(value, { maxLength = 4000 } = {}) {
   if (typeof value !== 'string') return '';
-  return value.replace(CONTROL_CHARS_RE, '').trim().slice(0, maxLength);
+  let cleaned = '';
+  for (const ch of value) {
+    if (!isStrippableControlChar(ch.codePointAt(0))) cleaned += ch;
+  }
+  return cleaned.trim().slice(0, maxLength);
 }
 
 const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };

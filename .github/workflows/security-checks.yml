@@ -49,7 +49,7 @@ jobs:
         with:
           project: 'ORCA'
           path: '.'
-          format: 'HTML'
+          format: 'ALL'
           out: 'reports'
           args: >
             --enableRetired

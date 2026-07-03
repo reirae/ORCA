@@ -20,7 +20,9 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: GITHUB_SHA
           script: |
+            set -e
             cd /home/student36/orca
+            git rev-parse HEAD > /home/student36/.orca_previous_sha
             git fetch origin
             git checkout $GITHUB_SHA
             docker compose -f docker-compose.prod.yml down
@@ -47,3 +49,102 @@ jobs:
         with:
           name: tls-scan-report
           path: 'output/*'
+
+  verify-smoke:
+    name: "Verify: Production smoke"
+    needs: [verify-tls]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install E2E dependencies
+        run: npm ci
+        working-directory: ./e2e
+
+      - name: Get installed Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")" >> "$GITHUB_OUTPUT"
+        working-directory: ./e2e
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+        working-directory: ./e2e
+
+      - name: Install Playwright OS dependencies only
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+        working-directory: ./e2e
+
+      - name: Run production smoke tests
+        run: npx playwright test tests/smoke.spec.ts
+        working-directory: ./e2e
+        env:
+          CI: true
+          BASE_URL: https://orca.freeddns.org
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-smoke-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+
+  rollback:
+    name: "Rollback: Restore previous deployment"
+    needs: [deploy, verify-tls, verify-smoke]
+    if: |
+      always() &&
+      (needs.deploy.result == 'failure' ||
+       needs['verify-tls'].result == 'failure' ||
+       needs['verify-smoke'].result == 'failure')
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Roll back via SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            if [ ! -f /home/student36/.orca_previous_sha ]; then
+              echo "No previous SHA recorded, cannot roll back automatically."
+              exit 1
+            fi
+            PREV_SHA=$(cat /home/student36/.orca_previous_sha)
+            echo "Rolling back to $PREV_SHA"
+            cd /home/student36/orca
+            git fetch origin
+            git checkout "$PREV_SHA"
+            docker compose -f docker-compose.prod.yml down
+            docker image prune -f
+            docker volume prune -f
+            docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
+
+      - name: Verify rollback is reachable
+        run: curl --retry 10 --retry-delay 5 --retry-connrefused --fail -sS -o /dev/null https://orca.freeddns.org
+
+      - name: Annotate rollback
+        if: always()
+        run: echo "::warning::Deployment of ${{ github.sha }} failed verification and was rolled back to the previous known-good commit."

@@ -2,23 +2,39 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { io } from "socket.io-client";
 import { useAuth } from "../auth/useAuth";
 import { apiFetch } from "../auth/api";
+import { useAuthedBlobUrl } from "../hooks/useAuthedBlobURL";
+import AnnotationCanvas from "./AnnotationCanvas";
+
+const MAX_FILE_MB = 15;
+const MAX_VOICE_SECONDS = 300;
 
 /**
- * Inline chat + WebRTC video for one worker↔expert conversation.
+ * Inline chat + WebRTC video for one worker<->expert conversation.
  * Mounted inside ConsultExpert when a thread is selected from the sidebar.
  *
- * During a call either side can draw on the OTHER person's video to point
- * things out (FR-11); strokes travel over the same authenticated signalling
- * socket with normalized [0,1] coordinates and are never persisted (SR-04).
- * Chat and call share the socket but not their fate: if the peer connection
- * drops or the TURN fetch fails, the call tears down cleanly and messaging
- * keeps working (SR-15).
+ * Workstream 3 additions on top of the original text-only thread:
+ *   - file/photo/document sharing (FR-08)
+ *   - voice messages (FR-10)
+ *   - Konva.js image annotation on shared files (FR-09)
+ *
+ * WebRTC video call (FR-11): during a call either side can draw on the OTHER
+ * person's video to point things out; strokes travel over the same
+ * authenticated signalling socket with normalized [0,1] coordinates and are
+ * never persisted (SR-04). Chat and call share the socket but not their fate:
+ * if the peer connection drops or the TURN fetch fails, the call tears down
+ * cleanly and messaging keeps working (SR-15).
  */
 
 // Stroke colors per role so both sides can tell who drew what.
 const STROKE_COLORS = { worker: "#22d3ee", expert: "#f59e0b" };
 const MAX_STROKE_POINTS = 512;
-export default function ConsultThread({ conversationId, counterpart }) {
+const RING_TIMEOUT_MS = 30000; // auto-cancel an unanswered outgoing call
+
+// Call lifecycle states where media is (or is about to be) active — used to
+// warn before the user leaves and to gate the leave guard.
+const ACTIVE_CALL_STATES = ["ringing", "connecting", "in-call"];
+
+export default function ConsultThread({ conversationId, counterpart, onCallActiveChange }) {
   const convId = conversationId;
   const { user, token } = useAuth();
 
@@ -35,6 +51,12 @@ export default function ConsultThread({ conversationId, counterpart }) {
   const [canFlip, setCanFlip] = useState(false);   // device has >1 camera (mobile)
   const [flipping, setFlipping] = useState(false);  // swap in progress
 
+  const [uploading, setUploading] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const [annotationTarget, setAnnotationTarget] = useState(null); // { fileId, downloadUrl, versions }
+  const [annotationCounts, setAnnotationCounts] = useState({}); // fileId -> version count
+
   const socketRef = useRef(null);
   const bottomRef = useRef(null);
   const pcRef = useRef(null);
@@ -43,6 +65,12 @@ export default function ConsultThread({ conversationId, counterpart }) {
   const remoteVideoRef = useRef(null);
   const iceServersRef = useRef([]);
   const pendingCandidatesRef = useRef([]);
+  // Workstream 3: file upload + voice recording
+  const fileInputRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const recordTimerRef = useRef(null);
+  // FR-11 live call annotation + camera flip
   const remoteCanvasRef = useRef(null); // overlay I draw on (their video)
   const localCanvasRef = useRef(null);  // overlay showing their drawings on my feed
   const myStrokesRef = useRef([]);
@@ -50,8 +78,25 @@ export default function ConsultThread({ conversationId, counterpart }) {
   const drawingRef = useRef(null); // in-progress stroke
   const facingModeRef = useRef("user"); // "user" = front, "environment" = back
   const flippingRef = useRef(false);    // re-entrancy guard for flipCamera
+  // FR-11 call setup handshake (ring → accept/decline)
+  const callRoleRef = useRef(null);     // "caller" | "callee" | null
+  const acceptedRef = useRef(false);    // callee accepted the incoming call
+  const ringTimeoutRef = useRef(null);  // outgoing-call no-answer timer
+  const callStatusRef = useRef("idle"); // mirror of callStatus for socket handlers
+  const peerNameRef = useRef(counterpart?.name || null); // for call-setup messages
 
   const myColor = STROKE_COLORS[user?.role] || STROKE_COLORS.worker;
+
+  // Keep ref copies of state the socket handlers read, so the handlers (set up
+  // once) don't have to be re-bound — and the socket reconnected — on every
+  // render.
+  useEffect(() => {
+    callStatusRef.current = callStatus;
+  }, [callStatus]);
+
+  useEffect(() => {
+    peerNameRef.current = remoteUserName || counterpart?.name || null;
+  }, [remoteUserName, counterpart]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -98,6 +143,29 @@ export default function ConsultThread({ conversationId, counterpart }) {
     drawingRef.current = null;
     redrawAnnotations();
   }, [redrawAnnotations]);
+
+  // Clear only MY strokes (the ones I drew on the peer's video). The peer is
+  // told to drop them from their view via call:annotation-clear, but their own
+  // drawings — and mine of theirs — are left untouched (#2).
+  const clearMyStrokes = useCallback(() => {
+    myStrokesRef.current = [];
+    drawingRef.current = null;
+    redrawAnnotations();
+  }, [redrawAnnotations]);
+
+  // Clear only the PEER's strokes (what they drew on my video), e.g. when they
+  // clear their own drawings.
+  const clearPeerStrokes = useCallback(() => {
+    peerStrokesRef.current = [];
+    redrawAnnotations();
+  }, [redrawAnnotations]);
+
+  const clearRingTimeout = useCallback(() => {
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = null;
+    }
+  }, []);
 
   const getLocalStream = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -187,6 +255,13 @@ export default function ConsultThread({ conversationId, counterpart }) {
     setNeedsPlayClick(false);
     setCanFlip(false);
     facingModeRef.current = "user"; // next call starts on the front camera
+    // Reset the call-setup handshake so the next call starts clean.
+    callRoleRef.current = null;
+    acceptedRef.current = false;
+    if (ringTimeoutRef.current) {
+      clearTimeout(ringTimeoutRef.current);
+      ringTimeoutRef.current = null;
+    }
     resetAnnotations();
   }, [resetAnnotations]);
 
@@ -237,8 +312,9 @@ export default function ConsultThread({ conversationId, counterpart }) {
     return pc;
   }, [convId, endCallMedia]);
 
+  // Callee side: runs only after the user has accepted the incoming call.
   const handleOffer = useCallback(async (offer) => {
-    setCallStatus("calling");
+    setCallStatus("connecting");
     setShowVideo(true);
     const stream = await getLocalStream();
     const pc = createPeerConnection(iceServersRef.current);
@@ -249,6 +325,27 @@ export default function ConsultThread({ conversationId, counterpart }) {
     await pc.setLocalDescription(answer);
     socketRef.current?.emit("call:answer", { conversationId: convId, answer });
   }, [convId, getLocalStream, createPeerConnection, flushPendingCandidates]);
+
+  // Caller side: once the callee accepts, build and send the SDP offer using
+  // the local preview stream we already opened while ringing.
+  const beginCallerOffer = useCallback(async () => {
+    setCallStatus("connecting");
+    const stream = localStreamRef.current || (await getLocalStream());
+    const pc = createPeerConnection(iceServersRef.current);
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socketRef.current?.emit("call:offer", { conversationId: convId, offer });
+  }, [convId, getLocalStream, createPeerConnection]);
+
+  // Cancel an outgoing call before it's answered (caller side, or on timeout).
+  const cancelCall = useCallback((reason) => {
+    clearRingTimeout();
+    socketRef.current?.emit("call:cancel", { conversationId: convId });
+    endCallMedia();
+    setShowVideo(false);
+    if (reason) setCallNotice(reason);
+  }, [convId, endCallMedia, clearRingTimeout]);
 
   const handleAnswer = useCallback(async (answer) => {
     await pcRef.current?.setRemoteDescription(new RTCSessionDescription(answer));
@@ -299,6 +396,22 @@ export default function ConsultThread({ conversationId, counterpart }) {
         if (!cancelled) setMessages((prev) => [...prev, msg]);
       });
 
+      socket.on("chat:file", (fileMsg) => {
+        if (!cancelled) setMessages((prev) => [...prev, fileMsg]);
+      });
+
+      socket.on("chat:voice", (voiceMsg) => {
+        if (!cancelled) setMessages((prev) => [...prev, voiceMsg]);
+      });
+
+      socket.on("chat:annotation", (annotation) => {
+        if (cancelled) return;
+        setAnnotationCounts((prev) => ({
+          ...prev,
+          [annotation.file_id]: Math.max(prev[annotation.file_id] || 0, annotation.version),
+        }));
+      });
+
       socket.on("chat:error", ({ message }) => {
         if (!cancelled) setThreadError(message);
       });
@@ -310,7 +423,55 @@ export default function ConsultThread({ conversationId, counterpart }) {
         setCallNotice(null);
       });
 
+      // Incoming call — show the accept/decline prompt instead of connecting (#3).
+      socket.on("call:ring", ({ name }) => {
+        if (cancelled) return;
+        // Busy (already in or placing a call): auto-decline.
+        if (callStatusRef.current !== "idle") {
+          socket.emit("call:decline", { conversationId: convId });
+          return;
+        }
+        callRoleRef.current = "callee";
+        acceptedRef.current = false;
+        if (name) setRemoteUserName(name);
+        setCallNotice(null);
+        setCallStatus("incoming");
+      });
+
+      // Callee accepted our outgoing call — send the SDP offer now.
+      socket.on("call:accept", () => {
+        if (cancelled || callRoleRef.current !== "caller") return;
+        clearRingTimeout();
+        beginCallerOffer().catch(() => {
+          setThreadError("Failed to start the call.");
+          endCallMedia();
+          setShowVideo(false);
+        });
+      });
+
+      // Callee declined our outgoing call.
+      socket.on("call:decline", () => {
+        if (cancelled || callRoleRef.current !== "caller") return;
+        clearRingTimeout();
+        endCallMedia();
+        setShowVideo(false);
+        setCallNotice(`${peerNameRef.current || "They"} declined the call.`);
+      });
+
+      // Caller cancelled before we (the callee) answered.
+      socket.on("call:cancel", () => {
+        if (cancelled || callStatusRef.current !== "incoming") return;
+        callRoleRef.current = null;
+        acceptedRef.current = false;
+        setCallStatus("idle");
+        setShowVideo(false);
+        setCallNotice(`Missed call from ${peerNameRef.current || "them"}.`);
+      });
+
+      // Only accept an offer we're expecting — i.e. we accepted an incoming
+      // call. This is what stops a call from connecting automatically (#3).
       socket.on("call:offer", ({ offer }) => {
+        if (cancelled || callRoleRef.current !== "callee" || !acceptedRef.current) return;
         handleOffer(offer).catch(() => setThreadError("Failed to accept incoming call."));
       });
 
@@ -328,8 +489,9 @@ export default function ConsultThread({ conversationId, counterpart }) {
         redrawAnnotations();
       });
 
+      // Peer cleared THEIR drawings — remove only their strokes, keep mine (#2).
       socket.on("call:annotation-clear", () => {
-        if (!cancelled) resetAnnotations();
+        if (!cancelled) clearPeerStrokes();
       });
 
       socket.on("call:ended", () => {
@@ -369,16 +531,35 @@ export default function ConsultThread({ conversationId, counterpart }) {
       cancelled = true;
       endCallMedia();
       socket?.emit("call:leave", { conversationId: convId });
+      socket?.emit("chat:leave", { conversationId: convId });
       socket?.disconnect();
       socketRef.current = null;
     };
-  }, [token, convId, user?.id, handleOffer, handleAnswer, handleRemoteCandidate, endCallMedia, redrawAnnotations, resetAnnotations]);
+  }, [token, convId, user?.id, handleOffer, handleAnswer, handleRemoteCandidate, beginCallerOffer, endCallMedia, redrawAnnotations, clearPeerStrokes, clearRingTimeout]);
 
   // Annotation canvases size themselves at draw time — redraw when the layout changes
   useEffect(() => {
     window.addEventListener("resize", redrawAnnotations);
     return () => window.removeEventListener("resize", redrawAnnotations);
   }, [redrawAnnotations]);
+
+  // #4 — warn before the tab is closed/refreshed while a call is active.
+  useEffect(() => {
+    if (!ACTIVE_CALL_STATES.includes(callStatus)) return;
+    const warn = (e) => {
+      e.preventDefault();
+      e.returnValue = ""; // required for the native "Leave site?" prompt
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [callStatus]);
+
+  // #4 — let the parent (ConsultExpert) know when a call is active so it can
+  // confirm before switching conversations mid-call. Reset on unmount.
+  useEffect(() => {
+    onCallActiveChange?.(ACTIVE_CALL_STATES.includes(callStatus));
+  }, [callStatus, onCallActiveChange]);
+  useEffect(() => () => onCallActiveChange?.(false), [onCallActiveChange]);
 
   function sendMessage() {
     if (!input.trim() || !socketRef.current) return;
@@ -396,26 +577,171 @@ export default function ConsultThread({ conversationId, counterpart }) {
     }
   }
 
+  // ---- Workstream 3: file upload ----
+
+  async function handleFileSelected(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+
+    if (file.size > MAX_FILE_MB * 1024 * 1024) {
+      setThreadError(`File is too large (max ${MAX_FILE_MB} MB).`);
+      return;
+    }
+
+    setUploading(true);
+    setThreadError(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await apiFetch(`/api/conversations/${convId}/files`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Upload failed.");
+      }
+    } catch (err) {
+      setThreadError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // ---- Workstream 3: voice messages ----
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordedChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        clearInterval(recordTimerRef.current);
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+      setRecordSeconds(0);
+      recordTimerRef.current = setInterval(() => {
+        setRecordSeconds((s) => {
+          if (s + 1 >= MAX_VOICE_SECONDS) {
+            stopRecording(true);
+          }
+          return s + 1;
+        });
+      }, 1000);
+    } catch {
+      setThreadError("Could not access microphone.");
+    }
+  }
+
+  function stopRecording(autoStopped = false) {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+
+    recorder.addEventListener(
+      "stop",
+      async () => {
+        setRecording(false);
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        if (autoStopped) setThreadError(`Voice message stopped automatically at ${MAX_VOICE_SECONDS}s.`);
+        await uploadVoiceMessage(blob);
+      },
+      { once: true }
+    );
+    recorder.stop();
+  }
+
+  async function uploadVoiceMessage(blob) {
+    setUploading(true);
+    setThreadError(null);
+    try {
+      const form = new FormData();
+      form.append("audio", blob, "voice-message");
+      const res = await apiFetch(`/api/conversations/${convId}/voice`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Could not send voice message.");
+      }
+    } catch (err) {
+      setThreadError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // ---- Workstream 3: image annotation ----
+
+  async function openAnnotator(fileMsg) {
+    try {
+      const res = await apiFetch(`/api/files/${fileMsg.id}/annotations`);
+      const data = res.ok ? await res.json() : { annotations: [] };
+      setAnnotationTarget({
+        fileId: fileMsg.id,
+        downloadUrl: `/api/conversations/${convId}/files/${fileMsg.id}`,
+        versions: data.annotations || [],
+      });
+    } catch {
+      setThreadError("Could not load existing annotations.");
+    }
+  }
+
+  function handleAnnotationSaved(annotation) {
+    setAnnotationCounts((prev) => ({ ...prev, [annotation.file_id]: annotation.version }));
+    setAnnotationTarget(null);
+  }
+
+  // Caller side (#3): ring the other participant and wait for them to accept
+  // before any media is negotiated.
   async function startCall() {
+    if (callStatus !== "idle") return;
     if (!counterpartOnline) {
       setCallNotice(`${counterpart?.name || "They"} must be logged in with this consultation open.`);
       return;
     }
     setCallNotice(null);
+    callRoleRef.current = "caller";
+    acceptedRef.current = false;
     setShowVideo(true);
-    setCallStatus("calling");
+    setCallStatus("ringing");
     try {
-      const stream = await getLocalStream();
-      const pc = createPeerConnection(iceServersRef.current);
-      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socketRef.current?.emit("call:offer", { conversationId: convId, offer });
+      await getLocalStream(); // local preview while ringing
+      socketRef.current?.emit("call:ring", { conversationId: convId });
+      clearRingTimeout();
+      ringTimeoutRef.current = setTimeout(() => {
+        cancelCall(`${counterpart?.name || "They"} didn't answer.`);
+      }, RING_TIMEOUT_MS);
     } catch {
       setCallNotice("Could not access camera/microphone.");
       endCallMedia();
       setShowVideo(false);
     }
+  }
+
+  // Callee side (#3): accept the incoming call. The caller then sends the SDP
+  // offer, and handleOffer opens our camera and answers.
+  function acceptCall() {
+    acceptedRef.current = true;
+    setCallNotice(null);
+    setShowVideo(true);
+    setCallStatus("connecting");
+    socketRef.current?.emit("call:accept", { conversationId: convId });
+  }
+
+  function declineCall() {
+    socketRef.current?.emit("call:decline", { conversationId: convId });
+    callRoleRef.current = null;
+    acceptedRef.current = false;
+    setShowVideo(false);
+    setCallStatus("idle");
   }
 
   function hangUp() {
@@ -461,8 +787,9 @@ export default function ConsultThread({ conversationId, counterpart }) {
     socketRef.current?.emit("call:annotation", { conversationId: convId, stroke });
   }
 
+  // Clears only my own drawings and tells the peer to drop them too (#2).
   function clearAnnotations() {
-    resetAnnotations();
+    clearMyStrokes();
     socketRef.current?.emit("call:annotation-clear", { conversationId: convId });
   }
 
@@ -478,7 +805,7 @@ export default function ConsultThread({ conversationId, counterpart }) {
           <span style={s.statusText}>
             {counterpartOnline ? "Online" : "Offline"}
           </span>
-          {!showVideo ? (
+          {callStatus === "idle" ? (
             <button
               style={{ ...s.callBtn, ...(!counterpartOnline ? s.callBtnDisabled : {}) }}
               onClick={startCall}
@@ -486,6 +813,10 @@ export default function ConsultThread({ conversationId, counterpart }) {
               title={!counterpartOnline ? "Available when they open this consultation" : "Start video call"}
             >
               Video call
+            </button>
+          ) : callStatus === "incoming" ? null : callStatus === "ringing" ? (
+            <button style={s.hangupBtn} onClick={() => cancelCall()}>
+              Cancel
             </button>
           ) : (
             <button style={s.hangupBtn} onClick={hangUp}>
@@ -497,6 +828,23 @@ export default function ConsultThread({ conversationId, counterpart }) {
 
       {callNotice && <div style={s.notice}>{callNotice}</div>}
       {threadError && <div style={s.error}>{threadError}</div>}
+
+      {/* #3 — incoming call prompt: nothing connects until Accept is clicked */}
+      {callStatus === "incoming" && (
+        <div style={s.incomingOverlay}>
+          <div style={s.incomingCard}>
+            <div style={s.incomingIcon}>📹</div>
+            <div style={s.incomingTitle}>Incoming video call</div>
+            <div style={s.incomingName}>
+              {remoteUserName || counterpart?.name || "Someone"} is calling…
+            </div>
+            <div style={s.incomingActions}>
+              <button style={s.declineBtn} onClick={declineCall}>Decline</button>
+              <button style={s.acceptBtn} onClick={acceptCall}>Accept</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showVideo && (
         <>
@@ -528,6 +876,13 @@ export default function ConsultThread({ conversationId, counterpart }) {
                 onPointerCancel={handleDrawEnd}
               />
               <span style={s.videoLabel}>{remoteUserName || counterpart?.name || "Waiting…"}</span>
+              {(callStatus === "ringing" || callStatus === "connecting") && (
+                <div style={s.callingOverlay}>
+                  {callStatus === "ringing"
+                    ? `Calling ${counterpart?.name || "…"}…`
+                    : "Connecting…"}
+                </div>
+              )}
               {needsPlayClick && (
                 <button
                   style={s.playBtn}
@@ -544,7 +899,7 @@ export default function ConsultThread({ conversationId, counterpart }) {
                 Draw on {counterpart?.name ? `${counterpart.name}'s` : "their"} video to point things out — they see it live.
               </span>
               <button style={s.annotationClearBtn} onClick={clearAnnotations}>
-                Clear drawings
+                Clear my drawings
               </button>
             </div>
           )}
@@ -557,15 +912,28 @@ export default function ConsultThread({ conversationId, counterpart }) {
         )}
         {messages.map((msg) => {
           const isMe = msg.sender_id === user?.id;
+          const key = `${msg.type}-${msg.id ?? msg.ts}`;
           return (
-            <div key={msg.id ?? `${msg.sent_at}-${msg.sender_id}`} style={s.bubbleRow(isMe)}>
-              <div style={s.bubble(isMe)}>
-                {!isMe && <div style={s.senderName}>{msg.sender_name}</div>}
-                <div>{msg.content}</div>
-                <div style={s.timestamp}>
-                  {new Date(msg.sent_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+            <div key={key} style={s.bubbleRow(isMe)}>
+              {msg.type === "file" ? (
+                <FileBubble
+                  msg={msg}
+                  isMe={isMe}
+                  convId={convId}
+                  annotationVersion={annotationCounts[msg.id]}
+                  onAnnotate={() => openAnnotator(msg)}
+                />
+              ) : msg.type === "voice" ? (
+                <VoiceBubble msg={msg} isMe={isMe} convId={convId} />
+              ) : (
+                <div style={s.bubble(isMe)}>
+                  {!isMe && <div style={s.senderName}>{msg.sender_name}</div>}
+                  <div>{msg.content}</div>
+                  <div style={s.timestamp}>
+                    {new Date(msg.sent_at || msg.ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           );
         })}
@@ -573,6 +941,29 @@ export default function ConsultThread({ conversationId, counterpart }) {
       </div>
 
       <div style={s.inputRow}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+          style={{ display: "none" }}
+          onChange={handleFileSelected}
+        />
+        <button
+          style={s.iconBtn}
+          onClick={() => fileInputRef.current?.click()}
+          disabled={status !== "connected" || uploading}
+          title="Attach a photo or document"
+        >
+          📎
+        </button>
+        <button
+          style={{ ...s.iconBtn, ...(recording ? s.iconBtnActive : {}) }}
+          onClick={() => (recording ? stopRecording() : startRecording())}
+          disabled={status !== "connected" || uploading}
+          title={recording ? "Stop recording" : "Record a voice message"}
+        >
+          {recording ? `⏹ ${recordSeconds}s` : "🎙️"}
+        </button>
         <input
           style={s.input}
           placeholder={status === "connected" ? "Message…" : "Connecting…"}
@@ -585,12 +976,90 @@ export default function ConsultThread({ conversationId, counterpart }) {
           Send
         </button>
       </div>
+
+      {annotationTarget && (
+        <AnnotationCanvas
+          fileId={annotationTarget.fileId}
+          downloadUrl={annotationTarget.downloadUrl}
+          existingVersions={annotationTarget.versions}
+          onSaved={handleAnnotationSaved}
+          onClose={() => setAnnotationTarget(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Image/document bubble — shows a thumbnail for images, a download link otherwise. */
+function FileBubble({ msg, isMe, convId, annotationVersion, onAnnotate }) {
+  const downloadUrl = `/api/conversations/${convId}/files/${msg.id}`;
+  const isImage = (msg.mime_type || "").startsWith("image/");
+  const { objectUrl } = useAuthedBlobUrl(isImage ? downloadUrl : null);
+
+  async function download() {
+    const res = await apiFetch(downloadUrl);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = msg.original_filename || "file";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div style={s.bubble(isMe)}>
+      {!isMe && <div style={s.senderName}>{msg.sender_name || msg.uploader_name}</div>}
+      {isImage ? (
+        <>
+          {objectUrl ? (
+            <img src={objectUrl} alt={msg.original_filename} style={s.thumb} onClick={download} />
+          ) : (
+            <div style={s.thumbLoading}>Loading image…</div>
+          )}
+          <div style={s.fileRow}>
+            <span style={s.fileName}>{msg.original_filename}</span>
+            <button style={s.linkBtn} onClick={onAnnotate}>
+              {annotationVersion ? `Annotations (${annotationVersion})` : "Annotate"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <button style={s.docRow} onClick={download}>
+          📄 {msg.original_filename}
+        </button>
+      )}
+      <div style={s.timestamp}>
+        {new Date(msg.sent_at || msg.uploaded_at || msg.ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+      </div>
+    </div>
+  );
+}
+
+/** Voice message bubble — authenticated audio playback. */
+function VoiceBubble({ msg, isMe, convId }) {
+  const downloadUrl = `/api/conversations/${convId}/voice/${msg.id}`;
+  const { objectUrl } = useAuthedBlobUrl(downloadUrl);
+
+  return (
+    <div style={s.bubble(isMe)}>
+      {!isMe && <div style={s.senderName}>{msg.sender_name}</div>}
+      {objectUrl ? (
+        <audio controls src={objectUrl} style={{ width: 220 }} />
+      ) : (
+        <div style={s.thumbLoading}>Loading voice message…</div>
+      )}
+      <div style={s.timestamp}>
+        {msg.duration_seconds ? `${msg.duration_seconds}s · ` : ""}
+        {new Date(msg.sent_at || msg.uploaded_at || msg.ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
+      </div>
     </div>
   );
 }
 
 const s = {
-  thread: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0 },
+  thread: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, position: "relative" },
   header: {
     display: "flex", justifyContent: "space-between", alignItems: "flex-start",
     gap: 12, padding: "16px 20px", borderBottom: "1px solid var(--orca-line)", flexShrink: 0,
@@ -620,6 +1089,24 @@ const s = {
   annotationHint: { fontSize: 11, color: "var(--orca-muted)" },
   annotationClearBtn: { padding: "4px 10px", borderRadius: 6, border: "1px solid var(--orca-line)", background: "transparent", color: "var(--orca-muted)", fontSize: 11, cursor: "pointer", flexShrink: 0 },
   playBtn: { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", padding: "8px 12px", borderRadius: 8, border: "none", background: "#3b82f6", color: "#fff", fontSize: 12, cursor: "pointer" },
+  callingOverlay: {
+    position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+    color: "#fff", fontSize: 14, background: "rgba(0,0,0,0.55)", textAlign: "center", padding: 12,
+  },
+  incomingOverlay: {
+    position: "absolute", inset: 0, zIndex: 20, display: "flex", alignItems: "center",
+    justifyContent: "center", background: "rgba(0,0,0,0.6)", padding: 20,
+  },
+  incomingCard: {
+    width: "100%", maxWidth: 320, background: "var(--orca-slate)", border: "1px solid var(--orca-line)",
+    borderRadius: 14, padding: "24px 20px", textAlign: "center",
+  },
+  incomingIcon: { fontSize: 34, marginBottom: 8 },
+  incomingTitle: { fontSize: 13, color: "var(--orca-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 },
+  incomingName: { fontSize: 17, fontWeight: 600, color: "var(--orca-paper)", marginBottom: 20 },
+  incomingActions: { display: "flex", gap: 10, justifyContent: "center" },
+  acceptBtn: { flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: "#22c55e", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" },
+  declineBtn: { flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: "#ef4444", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" },
   chatBox: { flex: 1, overflowY: "auto", padding: 16, margin: "12px 20px", border: "1px solid var(--orca-line)", borderRadius: 10, background: "var(--orca-abyss)", minHeight: 0 },
   emptyChat: { textAlign: "center", color: "var(--orca-faint)", fontSize: 14, marginTop: 40 },
   bubbleRow: (isMe) => ({ display: "flex", justifyContent: isMe ? "flex-end" : "flex-start", marginBottom: 8 }),
@@ -632,7 +1119,15 @@ const s = {
   }),
   senderName: { fontSize: 11, color: "var(--orca-muted)", marginBottom: 2 },
   timestamp: { fontSize: 10, color: "var(--orca-faint)", marginTop: 4, textAlign: "right" },
-  inputRow: { display: "flex", gap: 8, padding: "12px 20px 16px", flexShrink: 0 },
+  inputRow: { display: "flex", gap: 8, padding: "12px 20px 16px", flexShrink: 0, alignItems: "center" },
+  iconBtn: { padding: "9px 10px", borderRadius: 8, border: "1px solid var(--orca-line)", background: "var(--orca-slate)", color: "var(--orca-ink)", fontSize: 14, cursor: "pointer", lineHeight: 1 },
+  iconBtnActive: { background: "#ef4444", color: "#fff", borderColor: "#ef4444" },
   input: { flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid var(--orca-line)", background: "var(--orca-slate)", color: "var(--orca-ink)", fontSize: 14 },
   sendBtn: { padding: "10px 18px", borderRadius: 8, border: "none", background: "var(--orca-hi)", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" },
+  thumb: { display: "block", maxWidth: 220, maxHeight: 220, borderRadius: 8, cursor: "pointer", objectFit: "cover" },
+  thumbLoading: { width: 220, height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--orca-faint)", fontSize: 12, background: "rgba(255,255,255,0.05)", borderRadius: 8 },
+  fileRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 6 },
+  fileName: { fontSize: 12, opacity: 0.9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 },
+  linkBtn: { background: "none", border: "none", color: "inherit", textDecoration: "underline", fontSize: 11, cursor: "pointer", padding: 0 },
+  docRow: { display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: "inherit", fontSize: 13, cursor: "pointer", padding: 0, textDecoration: "underline" },
 };

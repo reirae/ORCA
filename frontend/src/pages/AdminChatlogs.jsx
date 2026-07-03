@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "../auth/api";
+import { useAuthedBlobUrl } from "../hooks/useAuthedBlobURL";
 
 /**
  * AdminChatLogs — mounted at /admin/chatlogs.
@@ -212,7 +213,7 @@ export default function AdminChatLogs() {
                 ) : messages.length === 0 ? (
                   <p style={s.emptyMsg}>No messages in this conversation.</p>
                 ) : messages.map((m) => (
-                  <div key={m.id} style={s.message}>
+                  <div key={`${m.type}-${m.id}`} style={s.message}>
                     <div style={s.msgHeader}>
                       <span style={{ ...s.msgSender, color: ROLE_COLORS[m.sender_role] || "#94a3b8" }}>
                         {m.sender_name}
@@ -222,7 +223,13 @@ export default function AdminChatLogs() {
                         {new Date(m.sent_at).toLocaleString()}
                       </span>
                     </div>
-                    <p style={s.msgContent}>{m.content}</p>
+                    {m.type === "file" ? (
+                      <AdminFileItem convId={selected.id} item={m} />
+                    ) : m.type === "voice" ? (
+                      <AdminVoiceItem convId={selected.id} item={m} />
+                    ) : (
+                      <p style={s.msgContent}>{m.content}</p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -260,6 +267,74 @@ export default function AdminChatLogs() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * AdminFileItem — renders an uploaded file in the admin log. Images show an
+ * inline thumbnail (click to download the original); other files show a
+ * download button. Media is fetched through the authenticated admin endpoint
+ * via useAuthedBlobUrl, since these are participant/RBAC-gated API routes, not
+ * static assets.
+ */
+function AdminFileItem({ convId, item }) {
+  const downloadUrl = `/api/admin/conversations/${convId}/files/${item.id}`;
+  const isImage = (item.mime_type || "").startsWith("image/");
+  const { objectUrl, error } = useAuthedBlobUrl(isImage ? downloadUrl : null);
+
+  async function download() {
+    const res = await apiFetch(downloadUrl);
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = item.original_filename || "file";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  if (isImage) {
+    return (
+      <div>
+        {error ? (
+          <div style={s.mediaError}>Could not load image.</div>
+        ) : objectUrl ? (
+          <img
+            src={objectUrl}
+            alt={item.original_filename}
+            style={s.mediaThumb}
+            onClick={download}
+            title="Click to download original"
+          />
+        ) : (
+          <div style={s.mediaLoading}>Loading image…</div>
+        )}
+        <div style={s.mediaCaption}>🖼 {item.original_filename}</div>
+      </div>
+    );
+  }
+
+  return (
+    <button style={s.fileDownloadBtn} onClick={download}>
+      📄 {item.original_filename || "Download file"}
+    </button>
+  );
+}
+
+/** AdminVoiceItem — authenticated audio playback of a voice message. */
+function AdminVoiceItem({ convId, item }) {
+  const downloadUrl = `/api/admin/conversations/${convId}/voice/${item.id}`;
+  const { objectUrl, error } = useAuthedBlobUrl(downloadUrl);
+
+  if (error) return <div style={s.mediaError}>Could not load voice message.</div>;
+  if (!objectUrl) return <div style={s.mediaLoading}>Loading voice message…</div>;
+
+  return (
+    <div style={s.voiceRow}>
+      <audio controls src={objectUrl} style={{ width: 260 }} />
+      {item.duration_seconds ? <span style={s.voiceDur}>{item.duration_seconds}s</span> : null}
     </div>
   );
 }
@@ -303,6 +378,13 @@ const s = {
   msgRole: { fontSize: 10, color: "var(--orca-muted)", background: "var(--orca-line)", padding: "1px 6px", borderRadius: 4 },
   msgTime: { fontSize: 11, color: "var(--orca-muted)", fontFamily: "monospace", marginLeft: "auto" },
   msgContent: { fontSize: 13, color: "var(--orca-ink)", margin: 0, lineHeight: 1.55, wordBreak: "break-word" },
+  mediaThumb: { maxWidth: 240, maxHeight: 240, borderRadius: 8, border: "1px solid var(--orca-line)", cursor: "pointer", display: "block" },
+  mediaCaption: { fontSize: 11, color: "var(--orca-muted)", marginTop: 4 },
+  mediaLoading: { fontSize: 12, color: "var(--orca-muted)", padding: "8px 0" },
+  mediaError: { fontSize: 12, color: "#f87171", padding: "8px 0" },
+  fileDownloadBtn: { fontSize: 13, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--orca-line)", background: "var(--orca-slate)", color: "var(--orca-ink)", cursor: "pointer", textAlign: "left" },
+  voiceRow: { display: "flex", alignItems: "center", gap: 8 },
+  voiceDur: { fontSize: 11, color: "var(--orca-muted)", fontFamily: "monospace" },
 
   // Dialog
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },

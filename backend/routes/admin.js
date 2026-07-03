@@ -1,9 +1,12 @@
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool').promise();
 const { authMiddleware, requireRole } = require('../middleware/authMiddleware');
 const { system, audit } = require('../utils/winstonLogger');
 const { categorizeAction } = require('../utils/auditCategories');
+const { computeSha256, UPLOAD_ROOT } = require('../middleware/upload');
 
 const LOKI_URL = process.env.LOKI_URL;
 
@@ -498,8 +501,14 @@ router.get('/conversations', async (req, res) => {
 
 /**
  * GET /api/admin/conversations/:id/messages
- * Read the full chat log for a conversation. Every admin read is
- * written to the audit trail. (FR-12, SR-29)
+ * Read the full chat log for a conversation. Returns a single chronological
+ * timeline of ALL content types — text messages, uploaded files/images, and
+ * voice messages — not just text, so moderation sees the complete conversation
+ * (the media itself is streamed by the two routes below). Each item carries a
+ * `type` ('text' | 'file' | 'voice') plus the fields that type needs. This
+ * mirrors the UNION shape workers/experts already get from
+ * conversationRepository.getConversationHistory. Every admin read is written to
+ * the audit trail. (FR-12, SR-03, SR-29)
  */
 router.get('/conversations/:id/messages', async (req, res) => {
   const convId = parseInt(req.params.id, 10);
@@ -514,14 +523,44 @@ router.get('/conversations/:id/messages', async (req, res) => {
     );
     if (!conv.length) return res.status(404).json({ error: 'Conversation not found.' });
 
+    // The timestamp column is aliased `sent_at` for all three types so the
+    // client can sort/display uniformly. `id` is only unique WITHIN a type, so
+    // the client keys rows by type+id.
     const [messages] = await pool.query(
-      `SELECT m.id, m.content, m.sent_at,
-              u.id AS sender_id, u.name AS sender_name, u.role AS sender_role
-         FROM messages m
-         JOIN users u ON u.id = m.sender_id
-        WHERE m.conversation_id = ?
-        ORDER BY m.sent_at ASC`,
-      [convId]
+      `SELECT * FROM (
+         SELECT 'text' AS type, m.id AS id, m.sent_at AS sent_at,
+                u.id AS sender_id, u.name AS sender_name, u.role AS sender_role,
+                m.content AS content,
+                NULL AS mime_type, NULL AS original_filename,
+                NULL AS file_size_bytes, NULL AS duration_seconds
+           FROM messages m
+           JOIN users u ON u.id = m.sender_id
+          WHERE m.conversation_id = ?
+
+         UNION ALL
+
+         SELECT 'file', f.id, f.uploaded_at,
+                u.id, u.name, u.role,
+                NULL,
+                f.mime_type, f.original_filename,
+                f.file_size_bytes, NULL
+           FROM files f
+           JOIN users u ON u.id = f.uploader_id
+          WHERE f.conversation_id = ?
+
+         UNION ALL
+
+         SELECT 'voice', v.id, v.uploaded_at,
+                u.id, u.name, u.role,
+                NULL,
+                'audio', NULL,
+                NULL, v.duration_seconds
+           FROM voice_messages v
+           JOIN users u ON u.id = v.sender_id
+          WHERE v.conversation_id = ?
+       ) sub
+       ORDER BY sub.sent_at ASC`,
+      [convId, convId, convId]
     );
 
     // Log every admin read of a chat log (SR-29).
@@ -539,6 +578,83 @@ router.get('/conversations/:id/messages', async (req, res) => {
     res.status(500).json({ error: 'Could not fetch messages.' });
   }
 });
+
+/**
+ * GET /api/admin/conversations/:id/files/:fileId
+ * GET /api/admin/conversations/:id/voice/:voiceId
+ *
+ * Stream a file/image or voice message from any conversation for moderation.
+ * The worker/expert download routes in routes/files.js are participant-gated
+ * (SR-04) and reject admins, so admins need these dedicated, admin-only routes
+ * (RBAC already enforced by the router.use at the top of this file — SR-03
+ * permits Admins to access any chat log's contents). Integrity is re-verified
+ * by checksum on every retrieval (SR-10), exactly as the participant routes do,
+ * and every download is audited (SR-29).
+ */
+async function streamConversationMedia(req, res, { sql, idParam, action, resourceType, fallbackType }) {
+  const convId = parseInt(req.params.id, 10);
+  const mediaId = parseInt(req.params[idParam], 10);
+  if (!Number.isInteger(convId) || convId < 1 || !Number.isInteger(mediaId) || mediaId < 1) {
+    return res.status(400).json({ error: 'Invalid identifier.' });
+  }
+
+  try {
+    // sql is a fixed string chosen by the route below (never user input); the
+    // media id and conversation id are the only parameterised values.
+    const [rows] = await pool.query(sql, [mediaId, convId]);
+    const record = rows[0];
+    if (!record) return res.status(404).json({ error: 'Not found.' });
+
+    const absolutePath = path.join(UPLOAD_ROOT, record.storage_path);
+
+    const actualChecksum = await computeSha256(absolutePath);
+    if (actualChecksum !== record.checksum_sha256) {
+      system.error('Checksum mismatch on admin media retrieval', {
+        context: 'admin', resourceType, mediaId, conversationId: convId,
+      });
+      return res.status(409).json({ error: 'File integrity check failed.' });
+    }
+
+    audit.log({
+      userId: req.user.id,
+      actionType: action,
+      resourceType,
+      resourceId: mediaId,
+      ip: req.ip,
+    });
+
+    res.setHeader('Content-Type', record.mime_type || fallbackType);
+    if (record.original_filename) {
+      res.setHeader('Content-Disposition', `inline; filename="${record.original_filename}"`);
+    }
+    fs.createReadStream(absolutePath).pipe(res);
+  } catch (err) {
+    system.error('Admin media download failed', { context: 'admin', resourceType, error: err.message });
+    res.status(500).json({ error: 'Could not retrieve media.' });
+  }
+}
+
+router.get('/conversations/:id/files/:fileId', (req, res) =>
+  streamConversationMedia(req, res, {
+    sql: `SELECT storage_path, checksum_sha256, mime_type, original_filename
+            FROM files WHERE id = ? AND conversation_id = ? LIMIT 1`,
+    idParam: 'fileId',
+    action: 'ADMIN_DOWNLOAD_FILE',
+    resourceType: 'file',
+    fallbackType: 'application/octet-stream',
+  })
+);
+
+router.get('/conversations/:id/voice/:voiceId', (req, res) =>
+  streamConversationMedia(req, res, {
+    sql: `SELECT storage_path, checksum_sha256, NULL AS mime_type, NULL AS original_filename
+            FROM voice_messages WHERE id = ? AND conversation_id = ? LIMIT 1`,
+    idParam: 'voiceId',
+    action: 'ADMIN_DOWNLOAD_VOICE',
+    resourceType: 'voice_message',
+    fallbackType: 'audio/webm',
+  })
+);
 
 /**
  * DELETE /api/admin/conversations/:id

@@ -42,6 +42,9 @@ const ACTION_CATEGORY_MAP = {
   // Downloading a stored artifact is a read of conversation content.
   FILE_DOWNLOADED: CATEGORY.READ,
   VOICE_MESSAGE_DOWNLOADED: CATEGORY.READ,
+  // Admin viewing conversation media from the chat-log moderation screen.
+  ADMIN_DOWNLOAD_FILE: CATEGORY.READ,
+  ADMIN_DOWNLOAD_VOICE: CATEGORY.READ,
 
   // ── Update ──────────────────────────────────────────────────────────
   email_verified: CATEGORY.UPDATE,
@@ -66,9 +69,11 @@ const ACTION_CATEGORY_MAP = {
   // ── Delete ──────────────────────────────────────────────────────────
   ADMIN_DELETE_USER: CATEGORY.DELETE,
   ADMIN_DELETE_CHAT_LOG: CATEGORY.DELETE,
-  // Self-service account deletion (FR-04/FR-05) and its failed-password attempt.
+  // Self-service account deletion (FR-04/FR-05), its failed-password attempt,
+  // and an admin being refused self-deletion at the endpoint.
   account_deleted: CATEGORY.DELETE,
   account_delete_failed: CATEGORY.DELETE,
+  account_delete_denied_admin: CATEGORY.DELETE,
 
   // ── Login (covers the full session/credential lifecycle: login attempts,
   //    logout, session termination, and the password-reset *request* step —

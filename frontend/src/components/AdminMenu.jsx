@@ -33,8 +33,11 @@ export default function AdminMenu({ user, onLogout }) {
             </div>
           </div>
           <div style={s.divider} />
-          <Link to="/adm/profile" style={s.menuItem} onClick={() => setOpen(false)}>
-            Profile
+          <Link to="/adm/security/password" style={s.menuItem} onClick={() => setOpen(false)}>
+            Change password
+          </Link>
+          <Link to="/adm/security/2fa" style={s.menuItem} onClick={() => setOpen(false)}>
+            Two-factor authentication
           </Link>
           <button
             onClick={() => {

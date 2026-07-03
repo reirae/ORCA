@@ -309,14 +309,24 @@ export default function AdminLogs() {
                 {tab !== "system" && (
                   <>
                     <th style={{ ...s.th, width: 90  }}>Category</th>
-                    <th style={{ ...s.th, width: 170 }}>Action Type</th>
+                    {/* Audit tab shows the Action Type; the All tab shows the raw
+                        Message instead, so system-log lines (which have no action
+                        type) still show their text alongside audit entries. */}
+                    {tab === "audit" ? (
+                      <th style={{ ...s.th, width: 170 }}>Action Type</th>
+                    ) : (
+                      <th style={s.th}>Message</th>
+                    )}
                     <th style={{ ...s.th, width: 72  }}>User ID</th>
                     <th style={{ ...s.th, width: 130 }}>Resource</th>
                     <th style={{ ...s.th, width: 110 }}>IP</th>
                   </>
                 )}
                 {tab === "system" && (
-                  <th style={s.th}>Message</th>
+                  <>
+                    <th style={{ ...s.th, width: 72 }}>User ID</th>
+                    <th style={s.th}>Message</th>
+                  </>
                 )}
                 <th style={{ ...s.th, width: 40, textAlign: "center" }}>
                   ↕
@@ -351,8 +361,12 @@ export default function AdminLogs() {
  * investigating an incident.
  */
 function LogRow({ log, idx, tab, expanded, onToggle, fmtTs }) {
-  // Column count per tab: ts + level (+ job on all/system) (+ msg/category/action/userId/ip on audit/all) + expand
-  const colSpan = tab === "all" ? 9 : tab === "audit" ? 8 : 4;
+  // Column count per tab (must match the <th> set in the table header so the
+  // expanded-payload row spans the full width):
+  //   audit  = ts, level, category, action, userId, resource, ip, expand      → 8
+  //   all    = ts, level, job, category, action, userId, resource, ip, expand → 9
+  //   system = ts, level, job, userId, message, expand                        → 6
+  const colSpan = tab === "all" ? 9 : tab === "audit" ? 8 : 6;
 
   return (
     <>
@@ -396,12 +410,18 @@ function LogRow({ log, idx, tab, expanded, onToggle, fmtTs }) {
             <td style={{ ...s.td, maxWidth: 90 }}>
               <CategoryBadge category={log.category} />
             </td>
-            <td style={{ ...s.td, maxWidth: 170 }}>
-              {log.actionType
-                ? <ActionBadge action={log.actionType} />
-                : "—"
-              }
-            </td>
+            {tab === "audit" ? (
+              <td style={{ ...s.td, maxWidth: 170 }}>
+                {log.actionType
+                  ? <ActionBadge action={log.actionType} />
+                  : "—"
+                }
+              </td>
+            ) : (
+              <td style={{ ...s.td, maxWidth: 320 }}>
+                <span style={s.msgText}>{log.msg || "—"}</span>
+              </td>
+            )}
             <td style={{ ...s.td, fontSize: 11.5, color: "var(--orca-muted)" }}>
               {log.userId ?? "—"}
             </td>
@@ -426,11 +446,16 @@ function LogRow({ log, idx, tab, expanded, onToggle, fmtTs }) {
           </>
         )}
 
-        {/* System message column */}
+        {/* System User ID + message columns */}
         {tab === "system" && (
-          <td style={{ ...s.td, maxWidth: 500 }}>
-            <span style={s.msgText}>{log.msg || "—"}</span>
-          </td>
+          <>
+            <td style={{ ...s.td, fontSize: 11.5, color: "var(--orca-muted)" }}>
+              {log.userId ?? "—"}
+            </td>
+            <td style={{ ...s.td, maxWidth: 500 }}>
+              <span style={s.msgText}>{log.msg || "—"}</span>
+            </td>
+          </>
         )}
 
         {/* Expand toggle */}

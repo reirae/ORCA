@@ -2,7 +2,6 @@ import { Routes, Route, Navigate, useParams } from "react-router-dom";
 import { RequireAuth, RequireAdmin, RequireRole, RedirectIfAuthed } from "./auth/guards";
 import AppShell from "./components/AppShell";
 import AdminShell from "./components/AdminShell";
-import UserMenu from "./components/UserMenu";
 
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";

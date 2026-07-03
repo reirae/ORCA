@@ -231,7 +231,6 @@ router.delete('/me', authMiddleware, async (req, res) => {
   }
 });
 
-const { hasTotp } = require('../utils/totp');
 
 /**
  * GET /api/users/me/2fa

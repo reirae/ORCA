@@ -793,10 +793,15 @@ const s = {
   tableWrapper: {
     border: "1px solid var(--orca-line)",
     borderRadius: 10,
-    overflow: "hidden",
+    // Scroll horizontally instead of clipping — the audit/all tabs have 8–9
+    // columns that don't fit a phone, so they'd otherwise be cut off.
+    overflowX: "auto",
   },
   table: {
     width: "100%",
+    // Keep the columns readable and let the wrapper scroll on narrow screens
+    // rather than crushing everything. On desktop the table just fills 100%.
+    minWidth: 760,
     borderCollapse: "collapse",
     fontSize: 12.5,
   },

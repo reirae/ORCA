@@ -128,9 +128,9 @@ export default function AdminChatLogs() {
         </div>
       )}
 
-      <div style={s.panels}>
+      <div className={`orca-chatlog-panels${selected ? " has-selection" : ""}`} style={s.panels}>
         {/* ── LEFT: conversation list ── */}
-        <div style={s.leftPanel}>
+        <div className="orca-chatlog-list" style={s.leftPanel}>
           <input
             style={s.searchInput}
             placeholder="Search participants…"
@@ -178,7 +178,7 @@ export default function AdminChatLogs() {
         </div>
 
         {/* ── RIGHT: message viewer ── */}
-        <div style={s.rightPanel}>
+        <div className="orca-chatlog-detail" style={s.rightPanel}>
           {!selected ? (
             <div style={s.noSelection}>
               <span style={{ fontSize: 36 }}>💬</span>
@@ -188,6 +188,15 @@ export default function AdminChatLogs() {
             <>
               {/* Header */}
               <div style={s.convHeader}>
+                {/* Back to list — mobile only (master-detail). */}
+                <button
+                  className="orca-chatlog-back"
+                  style={s.backBtn}
+                  onClick={() => setSelected(null)}
+                  aria-label="Back to conversations"
+                >
+                  ←
+                </button>
                 <div>
                   <span style={s.convTitle}>
                     Conversation #{selected.id}
@@ -369,7 +378,10 @@ const s = {
   // Right
   rightPanel: { border: "1px solid var(--orca-line)", borderRadius: 10, display: "flex", flexDirection: "column", overflow: "hidden" },
   noSelection: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--orca-muted)", fontSize: 14, gap: 10 },
-  convHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderBottom: "1px solid var(--orca-line)", background: "var(--orca-slate)" },
+  convHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--orca-line)", background: "var(--orca-slate)" },
+  // display is controlled by CSS (.orca-chatlog-back) — hidden on desktop,
+  // shown on mobile — so it isn't set here.
+  backBtn: { width: 34, height: 34, alignItems: "center", justifyContent: "center", borderRadius: 8, border: "1px solid var(--orca-line)", background: "var(--orca-abyss)", color: "var(--orca-ink)", fontSize: 16, cursor: "pointer", flexShrink: 0 },
   convTitle: { fontSize: 14, fontWeight: 700, color: "var(--orca-ink)" },
   convSubtitle: { fontSize: 12, color: "var(--orca-muted)", marginTop: 2 },
   deleteBtn: { fontSize: 12, padding: "6px 12px", borderRadius: 8, border: "1px solid #dc2626", background: "transparent", color: "#f87171", cursor: "pointer", fontWeight: 500 },

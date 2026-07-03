@@ -717,7 +717,7 @@ export default function ConsultThread({ conversationId, counterpart }) {
           <p style={s.emptyChat}>No messages yet — say hello to start.</p>
         )}
         {messages.map((msg) => {
-          const isMe = msg.sender_id === user?.id;
+          const isMe = (msg.sender_id ?? msg.uploader_id) === user?.id;
           const key = `${msg.type}-${msg.id ?? msg.ts}`;
           return (
             <div key={key} style={s.bubbleRow(isMe)}>

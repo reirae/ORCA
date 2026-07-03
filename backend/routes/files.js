@@ -94,7 +94,9 @@ router.post('/:id/files', ...guard, uploadFile.single('file'), async (req, res) 
       type: 'file',
       id: result.insertId,
       conversation_id: req.conversationId,
-      uploader_id: req.user.id,
+      sender_id: req.user.id,      // normalised to match the history query alias
+      sender_name: req.user.name,
+      uploader_id: req.user.id,    // kept for any consumers still reading this field
       uploader_name: req.user.name,
       original_filename: displayName,
       mime_type: detected.mime,

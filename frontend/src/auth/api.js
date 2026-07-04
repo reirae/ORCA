@@ -37,6 +37,58 @@ export function fetchCsrfToken() {
   return csrfFetchPromise;
 }
 
+let refreshPromise = null;
+
+/**
+ * Exchange the refresh token for a fresh access token, storing it. Returns the
+ * new token, or null if refresh isn't possible (no refresh token, or the server
+ * rejected it — i.e. the session really is dead).
+ *
+ * Deduped via a shared promise: during a server-side token rotation, several
+ * in-flight requests can 401 at once — they all await the SAME refresh instead
+ * of firing a stampede of /refresh calls. Uses a raw fetch (not apiFetch) so a
+ * failing refresh can't recurse back into this handler.
+ */
+function refreshAccessToken() {
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    const refreshToken = sessionStorage.getItem(REFRESH_KEY);
+    if (!refreshToken) return null;
+
+    // /refresh is a state-changing POST — it needs a CSRF token bound to the
+    // refresh-token session identifier.
+    if (!sessionStorage.getItem(CSRF_KEY)) await fetchCsrfToken();
+    const csrfToken = sessionStorage.getItem(CSRF_KEY);
+
+    try {
+      const res = await fetch("/api/auth/refresh", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "x-refresh-token": refreshToken,
+          ...(csrfToken ? { "x-csrf-token": csrfToken } : {}),
+        },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      if (data.token) {
+        sessionStorage.setItem(STORAGE_KEY, data.token);
+        return data.token;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  })().finally(() => {
+    refreshPromise = null;
+  });
+
+  return refreshPromise;
+}
+
 /**
  * Authenticated fetch wrapper.
  *
@@ -77,8 +129,9 @@ export async function apiFetch(url, options = {}) {
 
   let response = await fetch(url, { ...options, headers, credentials: "include" });
 
-  // If the server rejects the token, try refreshing it ONCE automatically 
-  // before giving up or throwing a false error.
+  // CSRF recovery: if a mutating request is rejected for a stale CSRF token,
+  // fetch a fresh one and retry ONCE before giving up. (Access-token 401s are
+  // handled separately below.)
   if (response.status === 403 && mutating) {
     const errorData = await response.clone().json().catch(() => ({}));
     const errMsg = `${errorData.error || ""} ${errorData.message || ""}`.toLowerCase();
@@ -96,7 +149,26 @@ export async function apiFetch(url, options = {}) {
     }
   }
 
-  // Global 401 handler — session revoked or expired on the server side.
+  // 401 recovery — the access token was rejected. Before signing the user out,
+  // try to refresh it ONCE and retry the request. This handles the token-
+  // rotation race: the silent refresh rotates the session's token_hash, so a
+  // request that carried the just-rotated (old) token gets a 401 even though
+  // the session is perfectly alive. Only a refresh that itself fails means the
+  // session is genuinely dead (revoked, expired, deleted).
+  if (
+    response.status === 401 &&
+    !options.__retried &&
+    !url.includes("/api/auth/refresh") &&
+    sessionStorage.getItem(REFRESH_KEY)
+  ) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      return apiFetch(url, { ...options, __retried: true });
+    }
+  }
+
+  // Global 401 handler — the session really is gone (refresh unavailable or
+  // rejected). Sign the user out.
   if (response.status === 401) {
     // Clear every stored credential so the user is fully signed out locally.
     sessionStorage.removeItem(STORAGE_KEY);

@@ -5,7 +5,7 @@ const {
   hashToken,
   refreshExpiryDate,
 } = require('./tokens');
-const { audit } = require('./winstonLogger');
+const { eventBus, DomainEvent } = require('../domain/events');
 const { SessionRepository } = require('../repositories/SessionRepository');
 const { UserRepository } = require('../repositories/UserRepository');
 
@@ -130,14 +130,13 @@ async function registerFailedAttempt(user, ip = null) {
 
   if (attempts >= HARD_LOCK_THRESHOLD) {
     await userRepo.applyHardLock(user.id, attempts);
-    audit.log({
+    eventBus.publish(new DomainEvent('ACCOUNT_HARD_LOCKED', {
       userId: user.id,
-      actionType: 'ACCOUNT_HARD_LOCKED',
       resourceType: 'user',
       resourceId: user.id,
       ip,
       level: 'warn',
-    });
+    }));
     return;
   }
 
@@ -149,14 +148,13 @@ async function registerFailedAttempt(user, ip = null) {
     // (rather than re-checking is_soft_locked, which would now be true on
     // every subsequent failed attempt too) guarantees a single event.
     if (user.failed_attempts < SOFT_LOCK_THRESHOLD) {
-      audit.log({
+      eventBus.publish(new DomainEvent('ACCOUNT_SOFT_LOCKED', {
         userId: user.id,
-        actionType: 'ACCOUNT_SOFT_LOCKED',
         resourceType: 'user',
         resourceId: user.id,
         ip,
         level: 'warn',
-      });
+      }));
     }
     return;
   }

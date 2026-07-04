@@ -102,6 +102,15 @@ router.post('/', authMiddleware, requireRole('worker'), async (req, res) => {
     );
 
     const conversation = await findConversationForUser(result.insertId, req.user.id);
+
+    // Real-time: tell both participants' personal rooms so an open consult list
+    // (e.g. the expert's) shows the new conversation without a manual refresh.
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user:${expertId}`).emit('conversation:new', { conversationId: result.insertId });
+      io.to(`user:${req.user.id}`).emit('conversation:new', { conversationId: result.insertId });
+    }
+
     res.status(201).json({ conversation, created: true });
   } catch (err) {
     system.error('Failed to create conversation', { context: 'conversations', error: err.message });

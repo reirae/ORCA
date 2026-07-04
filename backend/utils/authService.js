@@ -1,4 +1,3 @@
-const pool = require('../db/pool').promise();
 const { verifyPassword } = require('./password');
 const {
   issueAccessToken,
@@ -6,7 +5,14 @@ const {
   hashToken,
   refreshExpiryDate,
 } = require('./tokens');
-const { audit } = require('./winstonLogger');
+const { eventBus, DomainEvent } = require('../domain/events');
+const { SessionRepository } = require('../repositories/SessionRepository');
+const { UserRepository } = require('../repositories/UserRepository');
+
+// authService is now a pure orchestrator: all data access is delegated to
+// repositories, so it holds no SQL of its own.
+const sessionRepo = new SessionRepository();
+const userRepo = new UserRepository();
 
 /**
  * Authentication service — the single shared core used by BOTH the public
@@ -61,11 +67,7 @@ const AuthResult = {
 async function authenticateUser(email, password, ip = null) {
   // Look the user up by email. We always run the password verification path
   // even when the user doesn't exist (see below) to keep timing uniform.
-  const [rows] = await pool.query(
-    'SELECT * FROM users WHERE email = ? LIMIT 1',
-    [email]
-  );
-  const user = rows[0];
+  const user = await userRepo.findByEmail(email);
 
   // Account enumeration defense: if the email is unknown, we still perform a
   // verify against a dummy hash so the response time is similar whether or not
@@ -107,12 +109,7 @@ async function authenticateUser(email, password, ip = null) {
   }
 
   // Success — reset the failure counter and clear any soft lock.
-  await pool.query(
-    `UPDATE users
-       SET failed_attempts = 0, is_soft_locked = FALSE, soft_lock_until = NULL
-     WHERE id = ?`,
-    [user.id]
-  );
+  await userRepo.resetFailedAttempts(user.id);
 
   return { result: AuthResult.SUCCESS, user };
 }
@@ -132,50 +129,37 @@ async function registerFailedAttempt(user, ip = null) {
   const attempts = user.failed_attempts + 1;
 
   if (attempts >= HARD_LOCK_THRESHOLD) {
-    await pool.query(
-      `UPDATE users SET failed_attempts = ?, is_hard_locked = TRUE WHERE id = ?`,
-      [attempts, user.id]
-    );
-    audit.log({
+    await userRepo.applyHardLock(user.id, attempts);
+    eventBus.publish(new DomainEvent('ACCOUNT_HARD_LOCKED', {
       userId: user.id,
-      actionType: 'ACCOUNT_HARD_LOCKED',
       resourceType: 'user',
       resourceId: user.id,
       ip,
       level: 'warn',
-    });
+    }));
     return;
   }
 
   if (attempts >= SOFT_LOCK_THRESHOLD) {
     const until = new Date(Date.now() + SOFT_LOCK_MINUTES * 60 * 1000);
-    await pool.query(
-      `UPDATE users
-         SET failed_attempts = ?, is_soft_locked = TRUE, soft_lock_until = ?
-       WHERE id = ?`,
-      [attempts, until, user.id]
-    );
+    await userRepo.applySoftLock(user.id, attempts, until);
     // Only fire once, on the request that actually crosses the threshold —
     // user.failed_attempts is the count BEFORE this attempt, so this check
     // (rather than re-checking is_soft_locked, which would now be true on
     // every subsequent failed attempt too) guarantees a single event.
     if (user.failed_attempts < SOFT_LOCK_THRESHOLD) {
-      audit.log({
+      eventBus.publish(new DomainEvent('ACCOUNT_SOFT_LOCKED', {
         userId: user.id,
-        actionType: 'ACCOUNT_SOFT_LOCKED',
         resourceType: 'user',
         resourceId: user.id,
         ip,
         level: 'warn',
-      });
+      }));
     }
     return;
   }
 
-  await pool.query(
-    `UPDATE users SET failed_attempts = ? WHERE id = ?`,
-    [attempts, user.id]
-  );
+  await userRepo.incrementFailedAttempts(user.id, attempts);
 }
 
 /**
@@ -211,25 +195,9 @@ const INACTIVITY_MINUTES = 15;
  * @returns {Promise<boolean>} true if a live session already exists.
  */
 async function hasActiveSession(userId) {
-  await pool.query(
-    `UPDATE sessions
-        SET revoked = TRUE
-      WHERE user_id = ?
-        AND revoked = FALSE
-        AND last_activity < (NOW() - INTERVAL ${INACTIVITY_MINUTES} MINUTE)`,
-    [userId]
-  );
-
-  const [rows] = await pool.query(
-    `SELECT COUNT(*) AS active
-       FROM sessions
-      WHERE user_id = ?
-        AND revoked = FALSE
-        AND expires_at > NOW()`,
-    [userId]
-  );
-
-  return rows[0].active >= MAX_CONCURRENT_SESSIONS;
+  await sessionRepo.sweepIdleSessions(userId, INACTIVITY_MINUTES);
+  const active = await sessionRepo.countLiveSessions(userId);
+  return active >= MAX_CONCURRENT_SESSIONS;
 }
 
 /**
@@ -245,19 +213,14 @@ async function createSession(user, { ip, userAgent }) {
   const accessToken = issueAccessToken(user);
   const refreshToken = generateRefreshToken();
 
-  await pool.query(
-    `INSERT INTO sessions
-       (user_id, token_hash, refresh_token_hash, source_ip, user_agent, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      user.id,
-      hashToken(accessToken),
-      hashToken(refreshToken),
-      ip || null,
-      userAgent || null,
-      refreshExpiryDate(),
-    ]
-  );
+  await sessionRepo.create({
+    userId: user.id,
+    tokenHash: hashToken(accessToken),
+    refreshTokenHash: hashToken(refreshToken),
+    sourceIp: ip || null,
+    userAgent: userAgent || null,
+    expiresAt: refreshExpiryDate(),
+  });
 
   return { accessToken, refreshToken };
 }
@@ -267,18 +230,12 @@ async function createSession(user, { ip, userAgent }) {
  * rather than delete it, so the admin audit/session history is preserved.
  */
 async function revokeSessionByRefreshToken(refreshToken) {
-  await pool.query(
-    `UPDATE sessions SET revoked = TRUE WHERE refresh_token_hash = ?`,
-    [hashToken(refreshToken)]
-  );
+  await sessionRepo.revokeByRefreshHash(hashToken(refreshToken));
 }
 
 /** Revoke the session tied to a specific access token (per-tab logout). */
 async function revokeSessionByAccessToken(accessToken) {
-  await pool.query(
-    `UPDATE sessions SET revoked = TRUE WHERE token_hash = ?`,
-    [hashToken(accessToken)]
-  );
+  await sessionRepo.revokeByAccessHash(hashToken(accessToken));
 }
 
 module.exports = {

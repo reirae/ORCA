@@ -13,7 +13,8 @@ const {
 } = require('../utils/authService');
 const { authLimiter, adminAuthLimiter } = require('../middleware/authRateLimiter');
 const { authMiddlewareNoTouch } = require('../middleware/authMiddleware');
-const { system, audit } = require('../utils/winstonLogger');
+const { system } = require('../utils/winstonLogger');
+const { eventBus, DomainEvent } = require('../domain/events');
 const { issueToken } = require('../utils/oneTimeTokens');
 const { sendActionEmail } = require('../utils/mailer');
 const { hasTotp, verifyTotp } = require('../utils/totp');
@@ -105,7 +106,7 @@ router.post('/register', authLimiter, async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?)`,
         [name, email, passwordHash, role, isVerified, isApproved]
       );
-      audit.log({ userId: result.insertId, actionType: 'register', resourceType: 'user', ip: req.ip });
+      eventBus.publish(new DomainEvent('register', { userId: result.insertId, resourceType: 'user', ip: req.ip }));
 
       // Issue an email-verification token and send the link. Failure to send
       // must not fail registration (the mailer logs a fallback), so this is
@@ -159,7 +160,7 @@ async function handleLogin(req, res, { adminOnly }) {
 
     if (result !== AuthResult.SUCCESS) {
       // Log the REAL reason internally; return the GENERIC message externally.
-      audit.log({ actionType: adminOnly ? 'admin_login_failed' : 'login_failed', resourceType: result, ip: req.ip });
+      eventBus.publish(new DomainEvent(adminOnly ? 'admin_login_failed' : 'login_failed', { resourceType: result, ip: req.ip }));
       // NOT_VERIFIED / NOT_APPROVED get a specific (non-enumerating) message so
       // a legitimate user knows to check email / await approval. These are only
       // reachable AFTER a correct password, so they don't leak account info.
@@ -176,11 +177,11 @@ async function handleLogin(req, res, { adminOnly }) {
     //   - public /login must REJECT admins (they use the admin endpoint)
     //   - admin /login must REJECT non-admins
     if (adminOnly && user.role !== 'admin') {
-      audit.log({ userId: user.id, actionType: 'admin_login_denied_non_admin', resourceType: user.role, ip: req.ip });
+      eventBus.publish(new DomainEvent('admin_login_denied_non_admin', { userId: user.id, resourceType: user.role, ip: req.ip }));
       return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
     }
     if (!adminOnly && user.role === 'admin') {
-      audit.log({ userId: user.id, actionType: 'admin_used_public_login', ip: req.ip });
+      eventBus.publish(new DomainEvent('admin_used_public_login', { userId: user.id, ip: req.ip }));
       return res.status(401).json({ error: GENERIC_LOGIN_ERROR });
     }
 
@@ -195,7 +196,7 @@ async function handleLogin(req, res, { adminOnly }) {
       }
       const totpOk = await verifyTotp(user.id, totp);
       if (!totpOk) {
-        audit.log({ userId: user.id, actionType: 'totp_failed', ip: req.ip });
+        eventBus.publish(new DomainEvent('totp_failed', { userId: user.id, ip: req.ip }));
         return res.status(401).json({ error: 'Invalid TOTP code.', totpRequired: true });
       }
     }
@@ -208,20 +209,17 @@ async function handleLogin(req, res, { adminOnly }) {
     // dashboard. Checked AFTER full authentication (password + 2FA) so it never
     // reveals session state to someone who hasn't proven the credentials.
     if (await hasActiveSession(user.id)) {
-      audit.log({
-        userId: user.id,
-        actionType: adminOnly ? 'admin_login_blocked_active_session' : 'login_blocked_active_session',
-        resourceType: 'session',
-        ip: req.ip,
-        level: 'warn',
-      });
+      eventBus.publish(new DomainEvent(
+        adminOnly ? 'admin_login_blocked_active_session' : 'login_blocked_active_session',
+        { userId: user.id, resourceType: 'session', ip: req.ip, level: 'warn' }
+      ));
       return res.status(409).json({
         error: 'This account is already signed in on another device. Log out there first, or wait a few minutes and try again.',
       });
     }
 
     const { accessToken, refreshToken } = await createSession(user, clientMeta(req));
-    audit.log({ userId: user.id, actionType: adminOnly ? 'admin_login_success' : 'login_success', resourceType: user.role, ip: req.ip });
+    eventBus.publish(new DomainEvent(adminOnly ? 'admin_login_success' : 'login_success', { userId: user.id, resourceType: user.role, ip: req.ip }));
 
     // Refresh token is returned in JSON and stored per-tab in sessionStorage so
     // two users logged in on separate tabs of the same browser do not share one
@@ -291,12 +289,11 @@ router.post('/logout', async (req, res) => {
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const decoded = verifyToken(authHeader.split(' ')[1]);
         if (decoded?.id) {
-          audit.log({
+          eventBus.publish(new DomainEvent('USER_LOGOUT', {
             userId: decoded.id,
-            actionType: 'USER_LOGOUT',
             resourceType: 'session',
             ip: req.ip,
-          });
+          }));
         }
       }
     } catch {

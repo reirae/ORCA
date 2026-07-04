@@ -4,7 +4,8 @@ const pool = require('../db/pool').promise();
 
 const { authMiddleware, requireRole } = require('../middleware/authMiddleware');
 const { isParticipant } = require('../utils/conversationRepository');
-const { system, audit } = require('../utils/winstonLogger');
+const { system } = require('../utils/winstonLogger');
+const { eventBus, DomainEvent } = require('../domain/events');
 
 const MAX_OVERLAY_JSON_BYTES = 512 * 1024; // 512 KB — generous for vector line data, blocks abuse
 const MAX_LINES_PER_OVERLAY = 500;         // sanity cap on number of strokes
@@ -158,13 +159,12 @@ router.post('/:fileId/annotations', ...guard, async (req, res) => {
       created_at: new Date().toISOString(),
     };
 
-    audit.log({
+    eventBus.publish(new DomainEvent('ANNOTATION_CREATED', {
       userId: req.user.id,
-      actionType: 'ANNOTATION_CREATED',
       resourceType: 'annotation',
       resourceId: result.insertId,
       ip: req.ip,
-    });
+    }));
 
     req.app.get('io')?.to(`chat:${req.file_.conversation_id}`).emit('chat:annotation', annotation);
 

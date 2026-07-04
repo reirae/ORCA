@@ -1,6 +1,12 @@
-const pool = require('../db/pool').promise();
 const { hashToken } = require('../utils/tokens');
 const { INACTIVITY_TIMEOUT_MS } = require('../middleware/authMiddleware');
+const { SessionRepository } = require('../repositories/SessionRepository');
+const { ConversationRepository } = require('../repositories/ConversationRepository');
+
+// Session- and conversation-table access is delegated to repositories; guards
+// hold only the idle-timeout policy and the per-event authorization flow.
+const sessionRepo = new SessionRepository();
+const conversationRepo = new ConversationRepository();
 
 /**
  * Shared access-control guards for socket handlers (SR-04).
@@ -22,26 +28,17 @@ const { INACTIVITY_TIMEOUT_MS } = require('../middleware/authMiddleware');
 
 /** Handshake-time: map a raw access token to a live session id, or null. */
 async function resolveSession(token) {
-  const [rows] = await pool.query(
-    `SELECT id, last_activity FROM sessions
-      WHERE token_hash = ? AND revoked = FALSE AND expires_at > NOW()
-      LIMIT 1`,
-    [hashToken(token)]
-  );
-  if (!rows.length) return null;
-  const idleMs = Date.now() - new Date(rows[0].last_activity).getTime();
+  const session = await sessionRepo.findLiveByTokenHash(hashToken(token));
+  if (!session) return null;
+  const idleMs = Date.now() - new Date(session.last_activity).getTime();
   if (idleMs > INACTIVITY_TIMEOUT_MS) return null;
-  return rows[0].id;
+  return session.id;
 }
 
 /** Event-time: is the session this socket connected with still valid? */
 async function isSessionLive(sessionId) {
   if (!sessionId) return false;
-  const [rows] = await pool.query(
-    'SELECT id FROM sessions WHERE id = ? AND revoked = FALSE AND expires_at > NOW() LIMIT 1',
-    [sessionId]
-  );
-  return rows.length > 0;
+  return sessionRepo.isLiveById(sessionId);
 }
 
 /**
@@ -55,25 +52,17 @@ function parseConversationId(raw) {
   return null;
 }
 
-async function isParticipant(conversationId, userId) {
-  const [rows] = await pool.query(
-    'SELECT id FROM conversations WHERE id = ? AND (worker_id = ? OR expert_id = ?)',
-    [conversationId, userId, userId]
-  );
-  return rows.length > 0;
-}
-
 /**
  * Full per-event gate: validates the conversation id, confirms the socket's
  * session is still live, and confirms the user is a participant of that
- * conversation. Returns the parsed conversation id, or null if any check
- * fails — callers treat null as access denied.
+ * conversation (via ConversationRepository). Returns the parsed conversation
+ * id, or null if any check fails — callers treat null as access denied.
  */
 async function authorizeConversationEvent(socket, rawConversationId) {
   const conversationId = parseConversationId(rawConversationId);
   if (!conversationId) return null;
   if (!(await isSessionLive(socket.sessionId))) return null;
-  if (!(await isParticipant(conversationId, socket.user.id))) return null;
+  if (!(await conversationRepo.isParticipant(conversationId, socket.user.id))) return null;
   return conversationId;
 }
 
@@ -81,6 +70,5 @@ module.exports = {
   resolveSession,
   isSessionLive,
   parseConversationId,
-  isParticipant,
   authorizeConversationEvent,
 };

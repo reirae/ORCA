@@ -132,7 +132,7 @@ jobs:
         run: docker compose -f docker-compose.e2e.yml down -v
 
   security-checks:
-    needs: [build, test-frontend, test-backend, test-e2e]
+    needs: [build, test-frontend, test-backend]
     uses: ./.github/workflows/security-checks.yml
     secrets: inherit
     permissions:

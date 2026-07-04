@@ -7,6 +7,12 @@ const {
   refreshExpiryDate,
 } = require('./tokens');
 const { audit } = require('./winstonLogger');
+const { SessionRepository } = require('../repositories/SessionRepository');
+
+// Data access to the sessions table is delegated to SessionRepository; the
+// user-table queries still live inline below (a later increment extracts them
+// into a UserRepository).
+const sessionRepo = new SessionRepository();
 
 /**
  * Authentication service — the single shared core used by BOTH the public
@@ -211,25 +217,9 @@ const INACTIVITY_MINUTES = 15;
  * @returns {Promise<boolean>} true if a live session already exists.
  */
 async function hasActiveSession(userId) {
-  await pool.query(
-    `UPDATE sessions
-        SET revoked = TRUE
-      WHERE user_id = ?
-        AND revoked = FALSE
-        AND last_activity < (NOW() - INTERVAL ${INACTIVITY_MINUTES} MINUTE)`,
-    [userId]
-  );
-
-  const [rows] = await pool.query(
-    `SELECT COUNT(*) AS active
-       FROM sessions
-      WHERE user_id = ?
-        AND revoked = FALSE
-        AND expires_at > NOW()`,
-    [userId]
-  );
-
-  return rows[0].active >= MAX_CONCURRENT_SESSIONS;
+  await sessionRepo.sweepIdleSessions(userId, INACTIVITY_MINUTES);
+  const active = await sessionRepo.countLiveSessions(userId);
+  return active >= MAX_CONCURRENT_SESSIONS;
 }
 
 /**
@@ -245,19 +235,14 @@ async function createSession(user, { ip, userAgent }) {
   const accessToken = issueAccessToken(user);
   const refreshToken = generateRefreshToken();
 
-  await pool.query(
-    `INSERT INTO sessions
-       (user_id, token_hash, refresh_token_hash, source_ip, user_agent, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      user.id,
-      hashToken(accessToken),
-      hashToken(refreshToken),
-      ip || null,
-      userAgent || null,
-      refreshExpiryDate(),
-    ]
-  );
+  await sessionRepo.create({
+    userId: user.id,
+    tokenHash: hashToken(accessToken),
+    refreshTokenHash: hashToken(refreshToken),
+    sourceIp: ip || null,
+    userAgent: userAgent || null,
+    expiresAt: refreshExpiryDate(),
+  });
 
   return { accessToken, refreshToken };
 }
@@ -267,18 +252,12 @@ async function createSession(user, { ip, userAgent }) {
  * rather than delete it, so the admin audit/session history is preserved.
  */
 async function revokeSessionByRefreshToken(refreshToken) {
-  await pool.query(
-    `UPDATE sessions SET revoked = TRUE WHERE refresh_token_hash = ?`,
-    [hashToken(refreshToken)]
-  );
+  await sessionRepo.revokeByRefreshHash(hashToken(refreshToken));
 }
 
 /** Revoke the session tied to a specific access token (per-tab logout). */
 async function revokeSessionByAccessToken(accessToken) {
-  await pool.query(
-    `UPDATE sessions SET revoked = TRUE WHERE token_hash = ?`,
-    [hashToken(accessToken)]
-  );
+  await sessionRepo.revokeByAccessHash(hashToken(accessToken));
 }
 
 module.exports = {

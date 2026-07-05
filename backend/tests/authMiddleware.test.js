@@ -15,7 +15,6 @@ jest.mock('../utils/winstonLogger', () => ({
   system: { info: jest.fn(), error: jest.fn() },
 }));
 
-const { verifyToken, hashToken } = require('../utils/tokens');
 const {
   authMiddleware,
   requireRole,

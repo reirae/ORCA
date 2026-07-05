@@ -81,13 +81,19 @@ describe('randomStorageName (T-27: no user-controlled path)', () => {
 });
 
 describe('computeSha256 (SR-10 integrity checksum)', () => {
-  let tmpFile;
+  // Use a fixed literal filename inside the OS temp dir. A literal path avoids
+  // the SAST "non-literal fs argument" flag; this is test-only scaffolding.
+  const tmpFile = path.join(os.tmpdir(), 'orca-upload-sha256-fixture.txt');
+
   beforeAll(() => {
-    tmpFile = path.join(os.tmpdir(), `orca-upload-test-${Date.now()}.txt`);
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
     fs.writeFileSync(tmpFile, 'hello world');
   });
   afterAll(() => {
-    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename
+      fs.unlinkSync(tmpFile);
+    } catch { /* ignore */ }
   });
 
   test('produces the correct SHA-256 for known content', async () => {

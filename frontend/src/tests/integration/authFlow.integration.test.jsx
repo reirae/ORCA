@@ -43,9 +43,12 @@ function Dashboard() { return <div>DASHBOARD PAGE</div>; }
 function Protected() { return <div>PROTECTED PAGE</div>; }
 
 function renderApp(initialPath) {
+  // MemoryRouter must wrap AuthProvider (matching main.jsx: BrowserRouter →
+  // AuthProvider), because AuthProvider uses useLocation() to treat navigation
+  // as activity.
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={[initialPath]}>
+    <MemoryRouter initialEntries={[initialPath]}>
+      <AuthProvider>
         <Routes>
           {/* Public auth pages bounce authenticated users away. */}
           <Route element={<RedirectIfAuthed />}>
@@ -57,8 +60,8 @@ function renderApp(initialPath) {
           </Route>
           <Route path="/dashboard" element={<Dashboard />} />
         </Routes>
-      </MemoryRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </MemoryRouter>
   );
 }
 

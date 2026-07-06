@@ -1,4 +1,5 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { useLocation } from "react-router-dom";
 import { AuthContext } from "./context";
 import { apiFetch, STORAGE_KEY, REFRESH_KEY, fetchCsrfToken, CSRF_KEY } from "./api";
 
@@ -77,6 +78,11 @@ export function AuthProvider({ children }) {
   // purity rule (effects, unlike render, are allowed to be impure).
   const lastActivityRef = useRef(null);
 
+  // Current route — used to treat navigation as user activity (see the effect
+  // further down). AuthProvider is rendered inside <BrowserRouter>, so this is
+  // available here.
+  const location = useLocation();
+
   const persist = useCallback((newToken, refreshToken) => {
     if (newToken) {
       sessionStorage.setItem(STORAGE_KEY, newToken);
@@ -120,7 +126,10 @@ export function AuthProvider({ children }) {
           throw new Error(data.error || "Email or password is incorrect.");
         }
         persist(data.token, data.refreshToken);
-        await fetchCsrfToken(); // refresh CSRF token now that refresh token exists
+        // Rebind the CSRF token to the new refresh-token identity. Forced so it
+        // can't reuse an in-flight fetch still bound to the anonymous identity,
+        // which would leave the next mutating request failing CSRF validation.
+        await fetchCsrfToken({ force: true });
         lastActivityRef.current = Date.now();
         return data;
       } catch (err) {
@@ -152,7 +161,9 @@ export function AuthProvider({ children }) {
     }
     persist(null);
     sessionStorage.removeItem(CSRF_KEY);
-    await fetchCsrfToken();
+    // Rebind the CSRF token to the anonymous identity now that the refresh token
+    // is gone (forced, for the same reason as login above).
+    await fetchCsrfToken({ force: true });
   }, [persist]);
 
   /**
@@ -173,6 +184,28 @@ export function AuthProvider({ children }) {
       ACTIVITY_EVENTS.forEach((evt) => window.removeEventListener(evt, markActive));
     };
   }, []);
+
+  /**
+   * Navigation counts as activity. A static page like the dashboard makes no
+   * API call of its own, so without this, moving there would neither reset the
+   * client idle clock (for programmatic/back-forward navigation that fires no
+   * DOM event) nor the server's last_activity. On every route change we mark
+   * the user active locally and — while signed in — ping the touching
+   * /api/auth/activity endpoint so the server's 15-minute inactivity clock
+   * resets too. (A background poll is deliberately NOT counted as activity; a
+   * deliberate navigation is.)
+   */
+  useEffect(() => {
+    lastActivityRef.current = Date.now();
+    if (sessionStorage.getItem(STORAGE_KEY)) {
+      // Promise.resolve wraps the call so a non-thenable return (e.g. a mocked
+      // apiFetch in tests) can't throw synchronously; in production apiFetch
+      // already returns a promise, so this is a no-op. A failed touch is
+      // non-fatal — a genuinely dead session is handled by apiFetch's global
+      // 401 logic, and transient errors are ignored.
+      Promise.resolve(apiFetch("/api/auth/activity")).catch(() => {});
+    }
+  }, [location.pathname]);
 
   /**
    * Session heartbeat + idle timeout + silent token refresh.

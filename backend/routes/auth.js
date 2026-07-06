@@ -13,7 +13,7 @@ const {
 } = require('../utils/authService');
 const { authLimiter, adminAuthLimiter } = require('../middleware/authRateLimiter');
 const { passwordPolicyMiddleware } = require('../middleware/passwordCheck');
-const { authMiddlewareNoTouch } = require('../middleware/authMiddleware');
+const { authMiddleware, authMiddlewareNoTouch } = require('../middleware/authMiddleware');
 const { system } = require('../utils/winstonLogger');
 const { eventBus, DomainEvent } = require('../domain/events');
 const { issueToken } = require('../utils/oneTimeTokens');
@@ -211,7 +211,7 @@ async function handleLogin(req, res, { adminOnly }) {
         { userId: user.id, resourceType: 'session', ip: req.ip, level: 'warn' }
       ));
       return res.status(409).json({
-        error: 'This account is already signed in on another device. Log out there first, or wait a few minutes and try again.',
+        error: 'Unable to sign in at this time. Please try again later.',
       });
     }
 
@@ -259,6 +259,20 @@ router.post('/admin/login', adminAuthLimiter, (req, res) => handleLogin(req, res
 // ---------------------------------------------------------------------------
 router.get('/session', authMiddlewareNoTouch, (req, res) => {
   res.json({ user: req.user });
+});
+
+// ---------------------------------------------------------------------------
+// ACTIVITY — an explicit "the user just did something" touch.
+//
+// The frontend calls this on real page navigation. Unlike GET /session (which
+// uses authMiddlewareNoTouch because a background poll must NOT keep an
+// abandoned tab alive), this uses the regular authMiddleware, whose normal
+// flow resets the session's 15-minute inactivity clock (last_activity = NOW).
+// That's what lets navigating to a static page like the dashboard — which makes
+// no other API call — count as activity server-side, not just client-side.
+// ---------------------------------------------------------------------------
+router.get('/activity', authMiddleware, (req, res) => {
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------

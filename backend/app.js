@@ -55,7 +55,14 @@ app.use('/api/voip', require('./routes/voip'));
 
 app.use((err, req, res, _next) => {
   if (err.code === 'EBADCSRFTOKEN') {
-    return res.status(403).json({ error: 'Invalid CSRF token' });
+    // Generic user-facing text — don't confirm the CSRF mechanism to a caller.
+    // The `code` field is a machine-readable signal (not shown to the user) that
+    // the frontend uses to transparently fetch a fresh token and retry once
+    // (see frontend/src/auth/api.js).
+    return res.status(403).json({
+      error: 'Your request could not be verified. Please refresh and try again.',
+      code: 'CSRF_INVALID',
+    });
   }
   system.error('Internal server error caught by global handler', {
     context: 'express', error: err.message, stack: err.stack,

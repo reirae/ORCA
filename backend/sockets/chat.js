@@ -2,6 +2,7 @@ const pool = require('../db/pool');
 const { system } = require('../utils/winstonLogger');
 const { sanitizeText } = require('../utils/sanitize');
 const { getConversationHistory, getConversationPage } = require('../utils/conversationRepository');
+const { encrypt } = require('../utils/messageCipher');
 const { createSocketLimiter } = require('../middleware/socketRateLimiter');
 const { authorizeConversationEvent } = require('./guards');
 
@@ -124,9 +125,12 @@ const registerChatHandlers = (io, socket) => {
         return;
       }
 
+      // Store the content ENCRYPTED at rest (SR-06). The live broadcast below
+      // still carries the plaintext `clean` to the room over TLS — only the
+      // database copy is ciphertext, so a DB dump reveals nothing.
       const [result] = await pool.promise().query(
         'INSERT INTO messages (conversation_id, sender_id, content, sent_at) VALUES (?, ?, ?, NOW())',
-        [id, user.id, clean]
+        [id, user.id, encrypt(clean)]
       );
 
       await pool.promise().query(

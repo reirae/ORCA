@@ -7,6 +7,7 @@ jest.mock('../../utils/winstonLogger', () => ({
   httpLogger: (req, res, next) => next(),
 }));
 
+const crypto = require('crypto');
 const { passwordPolicyMiddleware, commonPasswords } = require('../../middleware/passwordCheck');
 const { system } = require('../../utils/winstonLogger');
 
@@ -85,7 +86,7 @@ describe('passwordPolicyMiddleware (NIST SP 800-63B blocklist)', () => {
 
   test('rejects passwords found in the HIBP range response', async () => {
     const password = 'ValidPass1234!';
-    const { suffix } = require('../../utils/hibpRangeDigest').hibpRangeDigest(password);
+    const suffix = crypto.createHash('sha1').update(password).digest('hex').toUpperCase().slice(5);
 
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,

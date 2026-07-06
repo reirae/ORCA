@@ -11,8 +11,8 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { system } = require('../utils/winstonLogger');
-const { hibpRangeDigest, hibpSuffixMatches } = require('../utils/hibpRangeDigest');
 const { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = require('../constants/passwordPolicy');
 
 const BLOCKLIST_PATH = path.join(__dirname, '../data/common-passwords.txt');
@@ -79,7 +79,10 @@ function blocklistError(password) {
 }
 
 async function hibpBreachedError(password) {
-  const { prefix, suffix } = hibpRangeDigest(password);
+  // HIBP Pwned Passwords k-anonymity requires SHA-1; only the 5-char prefix is sent.
+  const digest = crypto.createHash('sha1').update(password).digest('hex').toUpperCase();
+  const prefix = digest.slice(0, 5);
+  const suffix = digest.slice(5);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HIBP_TIMEOUT_MS);
@@ -101,7 +104,10 @@ async function hibpBreachedError(password) {
     const body = await response.text();
     for (const line of body.split('\n')) {
       const [hashSuffix] = line.trim().split(':');
-      if (hibpSuffixMatches(hashSuffix, suffix)) {
+      if (
+        hashSuffix.length === suffix.length &&
+        crypto.timingSafeEqual(Buffer.from(hashSuffix), Buffer.from(suffix))
+      ) {
         return 'This password has appeared in a known data breach. Choose a different password.';
       }
     }

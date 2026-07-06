@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool').promise();
 const { authMiddleware, requireRole } = require('../middleware/authMiddleware');
-const { verifyPassword, hashPassword, passwordPolicyError } = require('../utils/password');
+const { verifyPassword, hashPassword } = require('../utils/password');
+const { passwordPolicyMiddleware } = require('../middleware/passwordCheck');
 const { eventBus, DomainEvent } = require('../domain/events');
 
 /**
@@ -122,16 +123,11 @@ router.post('/me/reauth', authMiddleware, async (req, res) => {
 /**
  * PATCH /api/users/me/password
  */
-router.patch('/me/password', authMiddleware, async (req, res) => {
+router.patch('/me/password', authMiddleware, passwordPolicyMiddleware, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
 
   if (typeof currentPassword !== 'string' || !currentPassword) {
     return res.status(400).json({ error: 'Current password is required.' });
-  }
-
-  const pwErr = passwordPolicyError(newPassword);
-  if (pwErr) {
-    return res.status(400).json({ error: pwErr });
   }
 
   try {

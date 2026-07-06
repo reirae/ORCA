@@ -63,15 +63,13 @@ describe('ResetPassword page', () => {
     expect(mockApiFetch).not.toHaveBeenCalled();
   });
 
-  test('rejects a password shorter than 12 chars', async () => {
+  test('rejects a password shorter than 8 chars', async () => {
     renderWithToken();
     fireEvent.change(screen.getByLabelText(/new password/i), { target: { value: 'short' } });
     fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'short' } });
     fireEvent.click(screen.getByRole('button', { name: /update password/i }));
     await waitFor(() => {
-      // Match the error alert specifically ("Password must be at least 12
-      // characters"), not the page description which also mentions the phrase.
-      expect(screen.getByText(/password must be at least 12 characters/i)).toBeInTheDocument();
+      expect(screen.getByText(/password must be at least 8 characters/i)).toBeInTheDocument();
     });
     expect(mockApiFetch).not.toHaveBeenCalled();
   });

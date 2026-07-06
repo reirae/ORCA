@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool').promise();
 
-const { hashPassword, passwordPolicyError } = require('../utils/password');
+const { hashPassword } = require('../utils/password');
 const {
   authenticateUser,
   hasActiveSession,
@@ -12,6 +12,7 @@ const {
   AuthResult,
 } = require('../utils/authService');
 const { authLimiter, adminAuthLimiter } = require('../middleware/authRateLimiter');
+const { passwordPolicyMiddleware } = require('../middleware/passwordCheck');
 const { authMiddlewareNoTouch } = require('../middleware/authMiddleware');
 const { system } = require('../utils/winstonLogger');
 const { eventBus, DomainEvent } = require('../domain/events');
@@ -63,7 +64,7 @@ function isValidEmail(email) {
 // ---------------------------------------------------------------------------
 // REGISTER
 // ---------------------------------------------------------------------------
-router.post('/register', authLimiter, async (req, res) => {
+router.post('/register', authLimiter, passwordPolicyMiddleware, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     const email = (req.body.email || '').trim().toLowerCase();
@@ -77,10 +78,6 @@ router.post('/register', authLimiter, async (req, res) => {
     }
     if (!isValidEmail(email)) {
       return res.status(400).json({ error: 'A valid email is required.' });
-    }
-    const pwErr = passwordPolicyError(password);
-    if (pwErr) {
-      return res.status(400).json({ error: pwErr });
     }
     if (role !== 'worker' && role !== 'expert') {
       return res.status(400).json({ error: 'Role must be worker or expert.' });

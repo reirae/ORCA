@@ -2,6 +2,12 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { OrcaWordmark } from "../components/Brand";
 import { apiFetch, fetchCsrfToken } from "../auth/api";
+import {
+  validatePasswordLength,
+  PASSWORD_PLACEHOLDER,
+  isPasswordTooLong,
+  passwordTooLongError,
+} from "../auth/passwordPolicy";
 
 /**
  * Register page — wired to POST /api/auth/register.
@@ -21,6 +27,9 @@ export default function Register() {
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
 
+  const passwordOverLimit = isPasswordTooLong(password);
+  const displayError = error || (passwordOverLimit ? passwordTooLongError() : null);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
@@ -28,7 +37,8 @@ export default function Register() {
     // Light client-side checks for fast feedback; the server validates too.
     if (!name.trim()) return setError("Please enter your name.");
     if (!email.trim()) return setError("Please enter your email.");
-    if (password.length < 12) return setError("Password must be at least 12 characters.");
+    const pwErr = validatePasswordLength(password);
+    if (pwErr) return setError(pwErr);
 
     setLoading(true);
     try {
@@ -103,9 +113,9 @@ export default function Register() {
             before access is granted.
           </p>
 
-          {error && (
+          {displayError && (
             <div className="orca-alert" role="alert">
-              {error}
+              {displayError}
             </div>
           )}
 
@@ -137,10 +147,11 @@ export default function Register() {
               <input
                 id="password"
                 type="password"
-                placeholder="At least 12 characters"
+                placeholder={PASSWORD_PLACEHOLDER}
                 autoComplete="off"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                aria-invalid={passwordOverLimit || undefined}
               />
             </div>
 
@@ -170,7 +181,7 @@ export default function Register() {
             <button
               type="submit"
               className="orca-btn orca-btn--primary orca-btn--block"
-              disabled={loading}
+              disabled={loading || passwordOverLimit}
             >
               {loading ? "Creating…" : "Create account"}
             </button>

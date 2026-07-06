@@ -3,6 +3,12 @@ import { Link } from "react-router-dom";
 import { apiFetch } from "../auth/api";
 import { useLocation } from "react-router-dom";
 import { securityPaths } from "../auth/securityPaths";
+import {
+  validatePasswordLength,
+  PASSWORD_PLACEHOLDER,
+  isPasswordTooLong,
+  passwordTooLongError,
+} from "../auth/passwordPolicy";
 
 export default function PasswordChange() {
   const [step, setStep] = useState("reauth"); // "reauth" | "change"
@@ -20,6 +26,9 @@ export default function PasswordChange() {
   // Admins have no profile hub — send them back to the admin dashboard.
   const backTo = isAdmin ? "/adm/managementDashboard" : `${paths.profile}?tab=security`;
   const backLabel = isAdmin ? "← Back to Dashboard" : "← Back to Security";
+
+  const newPasswordOverLimit = isPasswordTooLong(newPassword);
+  const changeError = error || (newPasswordOverLimit ? passwordTooLongError() : null);
 
   async function handleReauth(e) {
     e.preventDefault();
@@ -44,6 +53,12 @@ export default function PasswordChange() {
   async function handleChangePassword(e) {
     e.preventDefault();
     setError(null);
+
+    const pwErr = validatePasswordLength(newPassword);
+    if (pwErr) {
+      setError(pwErr);
+      return;
+    }
 
     if (newPassword !== confirmPassword) {
       setError("New passwords do not match.");
@@ -102,6 +117,7 @@ export default function PasswordChange() {
 
       {!done && step === "change" && (
         <form onSubmit={handleChangePassword}>
+          <p style={{ ...s.sub, marginBottom: 16 }}>Choose a new password.</p>
           <div style={s.field}>
             <label style={s.label}>New password</label>
             <input
@@ -110,6 +126,8 @@ export default function PasswordChange() {
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
+              placeholder={PASSWORD_PLACEHOLDER}
+              aria-invalid={newPasswordOverLimit || undefined}
               required
             />
           </div>
@@ -121,11 +139,12 @@ export default function PasswordChange() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               autoComplete="new-password"
+              placeholder="Re-enter password"
               required
             />
           </div>
-          {error && <p style={{ color: "var(--orca-danger, #e05a5a)", fontSize: 13 }}>{error}</p>}
-          <button type="submit" disabled={submitting} className="orca-btn orca-btn--ghost" style={{ marginTop: 8 }}>
+          {changeError && <p style={{ color: "var(--orca-danger, #e05a5a)", fontSize: 13 }}>{changeError}</p>}
+          <button type="submit" disabled={submitting || newPasswordOverLimit} className="orca-btn orca-btn--ghost" style={{ marginTop: 8 }}>
             {submitting ? "Saving…" : "Change password"}
           </button>
         </form>

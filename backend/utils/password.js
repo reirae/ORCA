@@ -19,6 +19,8 @@ async function verifyPassword(hash, plain) {
   return hasher.verify(hash, plain);
 }
 
+const { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = require('../constants/passwordPolicy');
+
 /**
  * Basic password policy. Kept deliberately simple and length-forward (length
  * matters far more than character-class rules). Tune to match the team's
@@ -26,13 +28,20 @@ async function verifyPassword(hash, plain) {
  * trusting the client.
  */
 function passwordPolicyError(password) {
-  if (typeof password !== 'string' || password.length < 12) {
-    return 'Password must be at least 12 characters.';
+  if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+    return `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
   }
-  if (password.length > 128) {
+  if (password.length > MAX_PASSWORD_LENGTH) {
     return 'Password is too long.';
   }
   return null;
 }
 
-module.exports = { hashPassword, verifyPassword, passwordPolicyError, HASH_OPTIONS };
+module.exports = {
+  hashPassword,
+  verifyPassword,
+  passwordPolicyError,
+  HASH_OPTIONS,
+  MIN_PASSWORD_LENGTH,
+  MAX_PASSWORD_LENGTH,
+};

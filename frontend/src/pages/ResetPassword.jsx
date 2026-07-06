@@ -2,6 +2,12 @@ import { useState } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { OrcaWordmark } from "../components/Brand";
 import { apiFetch } from "../auth/api";
+import {
+  validatePasswordLength,
+  PASSWORD_PLACEHOLDER,
+  isPasswordTooLong,
+  passwordTooLongError,
+} from "../auth/passwordPolicy";
 
 /**
  * Reset-password page. The link in the reset email points here:
@@ -20,11 +26,15 @@ export default function ResetPassword() {
   const [error, setError] = useState(null);
   const [done, setDone] = useState(false);
 
+  const passwordOverLimit = isPasswordTooLong(password);
+  const displayError = error || (passwordOverLimit ? passwordTooLongError() : null);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
     if (!token) return setError("This reset link is missing its token.");
-    if (password.length < 12) return setError("Password must be at least 12 characters.");
+    const pwErr = validatePasswordLength(password);
+    if (pwErr) return setError(pwErr);
     if (password !== confirm) return setError("Passwords don't match.");
 
     setLoading(true);
@@ -66,18 +76,19 @@ export default function ResetPassword() {
           ) : (
             <>
               <h1 style={s.h1}>Set a new password</h1>
-              <p style={s.sub}>Choose a strong password of at least 12 characters.</p>
-              {error && <div className="orca-alert" role="alert">{error}</div>}
+              <p style={s.sub}>Choose a strong password.</p>
+              {displayError && <div className="orca-alert" role="alert">{displayError}</div>}
               <form onSubmit={handleSubmit} noValidate autoComplete="off">
                 <div className="orca-field">
                   <label htmlFor="password">New password</label>
                   <input
                     id="password"
                     type="password"
-                    placeholder="At least 12 characters"
+                    placeholder={PASSWORD_PLACEHOLDER}
                     autoComplete="off"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
+                    aria-invalid={passwordOverLimit || undefined}
                   />
                 </div>
                 <div className="orca-field">
@@ -94,7 +105,7 @@ export default function ResetPassword() {
                 <button
                   type="submit"
                   className="orca-btn orca-btn--primary orca-btn--block"
-                  disabled={loading}
+                  disabled={loading || passwordOverLimit}
                 >
                   {loading ? "Updating…" : "Update password"}
                 </button>

@@ -3,6 +3,7 @@ const router = express.Router();
 const pool = require('../db/pool').promise();
 
 const { hashPassword, verifyPassword } = require('../utils/password');
+const { passwordPolicyMiddleware } = require('../middleware/passwordCheck');
 const { issueToken, consumeToken, peekToken } = require('../utils/oneTimeTokens');
 const { sendActionEmail } = require('../utils/mailer');
 const { setupTotp, confirmTotp, verifyTotp, hasTotp, disableTotp } = require('../utils/totp');
@@ -33,14 +34,6 @@ function isValidEmail(email) {
   // first, then use a bounded character-class regex with no nested quantifiers.
   if (typeof email !== 'string' || email.length > 254) return false;
   return /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,255}$/.test(email);
-}
-
-function passwordPolicyError(password) {
-  if (typeof password !== 'string' || password.length < 12) {
-    return 'Password must be at least 12 characters.';
-  }
-  if (password.length > 128) return 'Password is too long.';
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,11 +120,9 @@ router.post('/forgot-password', authLimiter, async (req, res) => {
   }
 });
 
-router.post('/reset-password', authLimiter, async (req, res) => {
+router.post('/reset-password', authLimiter, passwordPolicyMiddleware, async (req, res) => {
   try {
     const { token, password } = req.body;
-    const pwErr = passwordPolicyError(password);
-    if (pwErr) return res.status(400).json({ error: pwErr });
 
     // Peek first (non-destructive) so a "same as old password" rejection
     // doesn't burn the user's single-use reset link — they can just try a

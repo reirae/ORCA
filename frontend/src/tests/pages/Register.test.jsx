@@ -43,15 +43,26 @@ describe('Register page', () => {
     expect(screen.getByRole('button', { name: /^expert$/i })).toBeInTheDocument();
   });
 
-  test('rejects a password shorter than 12 chars without calling the API', async () => {
+  test('rejects a password shorter than 8 chars without calling the API', async () => {
     renderRegister();
     fireEvent.change(screen.getByLabelText(/full name/i), { target: { value: 'Jane' } });
     fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'jane@orca.com' } });
     fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'short' } });
     fireEvent.click(screen.getByRole('button', { name: /create account/i }));
     await waitFor(() => {
-      expect(screen.getByText(/at least 12 characters/i)).toBeInTheDocument();
+      expect(screen.getByText(/at least 8 characters/i)).toBeInTheDocument();
     });
+    expect(mockApiFetch).not.toHaveBeenCalled();
+  });
+
+  test('rejects a password longer than the maximum without calling the API', async () => {
+    renderRegister();
+    fireEvent.change(screen.getByLabelText(/full name/i), { target: { value: 'Jane' } });
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'jane@orca.com' } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: 'x'.repeat(200) } });
+    expect(screen.getByText(/password is too long/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /create account/i })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /create account/i }));
     expect(mockApiFetch).not.toHaveBeenCalled();
   });
 
@@ -63,7 +74,6 @@ describe('Register page', () => {
     await waitFor(() => {
       expect(screen.getByText(/almost there/i)).toBeInTheDocument();
     });
-    // Anti-enumeration wording: conditional, not a definite "we sent it".
     expect(screen.getByText(/isn't already registered/i)).toBeInTheDocument();
   });
 
@@ -71,7 +81,7 @@ describe('Register page', () => {
     mockApiFetch.mockResolvedValue({ ok: true, json: async () => ({ message: 'ok' }) });
     renderRegister();
     fillForm();
-    fireEvent.click(screen.getByRole('button', { name: /^expert$/i })); // switch role
+    fireEvent.click(screen.getByRole('button', { name: /^expert$/i }));
     fireEvent.click(screen.getByRole('button', { name: /create account/i }));
     await waitFor(() => {
       expect(screen.getByText(/awaiting admin approval/i)).toBeInTheDocument();

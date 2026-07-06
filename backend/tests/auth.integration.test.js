@@ -78,11 +78,23 @@ function dbReturnsUser(user) {
 describe('POST /api/auth/register (integration)', () => {
   afterEach(() => jest.clearAllMocks());
 
-  test('rejects a password shorter than the policy minimum (400)', async () => {
+  test('rejects a password shorter than 8 chars without calling the API', async () => {
     dbReturnsUser(null);
     const res = await csrfPost('/api/auth/register', { name: 'Jane', email: 'jane@orca.com', password: 'short', role: 'worker' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/12 characters|password/i);
+    expect(res.body.error).toMatch(/8 characters|password/i);
+  });
+
+  test('rejects a password longer than 128 characters (400)', async () => {
+    dbReturnsUser(null);
+    const res = await csrfPost('/api/auth/register', {
+      name: 'Jane',
+      email: 'jane@orca.com',
+      password: 'x'.repeat(129),
+      role: 'worker',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/too long/i);
   });
 
   test('rejects an invalid email (400)', async () => {

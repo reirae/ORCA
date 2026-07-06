@@ -198,10 +198,12 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     lastActivityRef.current = Date.now();
     if (sessionStorage.getItem(STORAGE_KEY)) {
-      apiFetch("/api/auth/activity").catch(() => {
-        // A failed touch is non-fatal: a genuinely dead session is handled by
-        // apiFetch's global 401 logic; transient errors are ignored.
-      });
+      // Promise.resolve wraps the call so a non-thenable return (e.g. a mocked
+      // apiFetch in tests) can't throw synchronously; in production apiFetch
+      // already returns a promise, so this is a no-op. A failed touch is
+      // non-fatal — a genuinely dead session is handled by apiFetch's global
+      // 401 logic, and transient errors are ignored.
+      Promise.resolve(apiFetch("/api/auth/activity")).catch(() => {});
     }
   }, [location.pathname]);
 

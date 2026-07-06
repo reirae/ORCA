@@ -32,9 +32,12 @@ function Dashboard() { return <div>DASHBOARD</div>; }
 function AdminLogin() { return <div>ADMIN LOGIN</div>; }
 
 function renderApp(initialPath) {
+  // MemoryRouter must wrap AuthProvider (matching main.jsx: BrowserRouter →
+  // AuthProvider), because AuthProvider uses useLocation() to treat navigation
+  // as activity.
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={[initialPath]}>
+    <MemoryRouter initialEntries={[initialPath]}>
+      <AuthProvider>
         <Routes>
           <Route element={<RequireRole roles={['admin']} />}>
             <Route path="/admin-thing" element={<AdminArea />} />
@@ -48,8 +51,8 @@ function renderApp(initialPath) {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/adm/administratorLogin" element={<AdminLogin />} />
         </Routes>
-      </MemoryRouter>
-    </AuthProvider>
+      </AuthProvider>
+    </MemoryRouter>
   );
 }
 

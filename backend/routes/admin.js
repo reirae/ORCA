@@ -8,6 +8,7 @@ const { system } = require('../utils/winstonLogger');
 const { eventBus, DomainEvent } = require('../domain/events');
 const { categorizeAction } = require('../utils/auditCategories');
 const { computeSha256, UPLOAD_ROOT } = require('../middleware/upload');
+const { decrypt } = require('../utils/messageCipher');
 
 const LOKI_URL = process.env.LOKI_URL;
 
@@ -522,7 +523,7 @@ router.get('/conversations/:id/messages', async (req, res) => {
     // The timestamp column is aliased `sent_at` for all three types so the
     // client can sort/display uniformly. `id` is only unique WITHIN a type, so
     // the client keys rows by type+id.
-    const [messages] = await pool.query(
+    const [rows] = await pool.query(
       `SELECT * FROM (
          SELECT 'text' AS type, m.id AS id, m.sent_at AS sent_at,
                 u.id AS sender_id, u.name AS sender_name, u.role AS sender_role,
@@ -558,6 +559,10 @@ router.get('/conversations/:id/messages', async (req, res) => {
        ORDER BY sub.sent_at ASC`,
       [convId, convId, convId]
     );
+
+    // Text message content is stored encrypted at rest (SR-06); decrypt for the
+    // admin viewer. file/voice rows carry NULL content and pass through.
+    const messages = rows.map((r) => ({ ...r, content: decrypt(r.content) }));
 
     // Log every admin read of a chat log (SR-29).
     eventBus.publish(new DomainEvent('ADMIN_READ_CHAT_LOG', {

@@ -1,8 +1,19 @@
 const pool = require('../db/pool');
+const { decrypt } = require('../utils/messageCipher');
 
 // Soft-deleted accounts have their email suffixed with this marker; a
 // conversation with a deleted participant must never surface.
 const DELETED_EMAIL_SUFFIX = '@orca-deleted';
+
+/**
+ * Decrypt the `content` of every row in a history/page result. Text messages
+ * are stored AES-256-GCM encrypted at rest (SR-06); file/voice rows carry a
+ * NULL content and decrypt() passes those (and any legacy plaintext) through
+ * untouched. Rows are returned oldest-first for display.
+ */
+function hydrateMessages(rows) {
+  return rows.reverse().map((r) => ({ ...r, content: decrypt(r.content) }));
+}
 
 /**
  * ConversationRepository — data access for conversations and their unified
@@ -66,7 +77,7 @@ class ConversationRepository {
       [conversationId, conversationId, conversationId, boundedLimit]
     );
     const hasMore = rows.length === boundedLimit;
-    return { messages: rows.reverse(), hasMore };
+    return { messages: hydrateMessages(rows), hasMore };
   }
 
   /** Load older messages before a given ISO timestamp (pagination). */
@@ -108,7 +119,7 @@ class ConversationRepository {
       [conversationId, conversationId, conversationId, before, boundedLimit]
     );
     const hasMore = rows.length === boundedLimit;
-    return { messages: rows.reverse(), hasMore };
+    return { messages: hydrateMessages(rows), hasMore };
   }
 
   // ---- HTTP inbox / detail / creation (routes/conversations.js) ----

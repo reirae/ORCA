@@ -42,6 +42,7 @@
   },
   "jest": {
     "testEnvironment": "node",
+    "setupFiles": ["<rootDir>/tests/setupEnv.js"],
     "collectCoverageFrom": [
       "routes/**/*.js",
       "middleware/**/*.js",

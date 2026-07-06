@@ -120,7 +120,10 @@ export function AuthProvider({ children }) {
           throw new Error(data.error || "Email or password is incorrect.");
         }
         persist(data.token, data.refreshToken);
-        await fetchCsrfToken(); // refresh CSRF token now that refresh token exists
+        // Rebind the CSRF token to the new refresh-token identity. Forced so it
+        // can't reuse an in-flight fetch still bound to the anonymous identity,
+        // which would leave the next mutating request failing CSRF validation.
+        await fetchCsrfToken({ force: true });
         lastActivityRef.current = Date.now();
         return data;
       } catch (err) {
@@ -152,7 +155,9 @@ export function AuthProvider({ children }) {
     }
     persist(null);
     sessionStorage.removeItem(CSRF_KEY);
-    await fetchCsrfToken();
+    // Rebind the CSRF token to the anonymous identity now that the refresh token
+    // is gone (forced, for the same reason as login above).
+    await fetchCsrfToken({ force: true });
   }, [persist]);
 
   /**

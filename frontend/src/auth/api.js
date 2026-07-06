@@ -12,11 +12,26 @@ function refreshHeaders(extra = {}) {
   return refreshToken ? { "x-refresh-token": refreshToken, ...extra } : extra;
 }
 
-// Call once on app startup to fetch and cache the CSRF token
-export function fetchCsrfToken() {
-  if (csrfFetchPromise) return csrfFetchPromise;
+/**
+ * Fetch and cache a CSRF token bound to the CURRENT session identity.
+ *
+ * The backend binds each CSRF token to a session identifier — the refresh token
+ * once logged in, or an anonymous context before login (see getSessionIdentifier
+ * in backend/app.js). That identifier changes at login and at logout, so a token
+ * cached under the previous identity is stale and the next mutating request is
+ * rejected with EBADCSRFTOKEN.
+ *
+ * Concurrent callers are normally deduped onto a single in-flight request. But a
+ * caller that runs RIGHT AFTER the identity changed (post-login, post-logout, or
+ * the CSRF-rejection retry) must NOT be handed a request that STARTED under the
+ * old identity — otherwise it caches a token bound to the wrong identifier. Such
+ * callers pass { force: true } to always issue a fresh request bound to the
+ * identity as it is now.
+ */
+export function fetchCsrfToken({ force = false } = {}) {
+  if (csrfFetchPromise && !force) return csrfFetchPromise;
 
-  csrfFetchPromise = fetch("/api/csrf-token", {
+  const p = fetch("/api/csrf-token", {
     credentials: "include",
     headers: refreshHeaders(),
   })
@@ -31,10 +46,13 @@ export function fetchCsrfToken() {
       sessionStorage.removeItem(CSRF_KEY);
     })
     .finally(() => {
-      csrfFetchPromise = null;
+      // Only clear the shared handle if it still points at THIS request, so a
+      // slow stale fetch resolving late can't wipe a newer forced fetch's handle.
+      if (csrfFetchPromise === p) csrfFetchPromise = null;
     });
 
-  return csrfFetchPromise;
+  csrfFetchPromise = p;
+  return p;
 }
 
 let refreshPromise = null;
@@ -136,9 +154,10 @@ export async function apiFetch(url, options = {}) {
     const errorData = await response.clone().json().catch(() => ({}));
     const errMsg = `${errorData.error || ""} ${errorData.message || ""}`.toLowerCase();
     if (errMsg.includes("csrf")) {
-      
-      // Force fetch a clean, synchronized token
-      await fetchCsrfToken();
+
+      // Force a fresh token bound to the current identity — bypass any in-flight
+      // fetch that may have started under the previous session identifier.
+      await fetchCsrfToken({ force: true });
       csrfToken = sessionStorage.getItem(CSRF_KEY);
       
       if (csrfToken) {
@@ -185,7 +204,7 @@ export async function apiFetch(url, options = {}) {
     const alreadyOnLogin = window.location.pathname === "/adm/administratorLogin" || window.location.pathname === "/login";
 
     if (!alreadyOnLogin) {
-      await fetchCsrfToken(); // get a fresh token before redirecting
+      await fetchCsrfToken({ force: true }); // fresh anonymous-bound token before redirecting
       window.location.replace(loginPath);
     }
   }

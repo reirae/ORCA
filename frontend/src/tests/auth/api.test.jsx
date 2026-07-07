@@ -140,6 +140,76 @@ describe('auth/api.js fetch wrapper', () => {
       globalThis.location = original;
     }
   });
+
+  test('retries a mutating request once after CSRF rejection (SR-28)', async () => {
+    sessionStorage.setItem(CSRF_KEY, 'stale-csrf');
+    globalThis.fetch
+      .mockResolvedValueOnce({
+        status: 403,
+        ok: false,
+        clone: () => ({
+          json: async () => ({ code: 'CSRF_INVALID' }),
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ csrfToken: 'fresh-csrf' }) })
+      .mockResolvedValueOnce({ status: 200, ok: true });
+
+    const res = await apiFetch('/api/conversations', { method: 'POST', body: '{}' });
+
+    expect(res.status).toBe(200);
+    expect(sessionStorage.getItem(CSRF_KEY)).toBe('fresh-csrf');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  test('does not retry when 403 is not a CSRF rejection', async () => {
+    sessionStorage.setItem(CSRF_KEY, 'csrf-abc');
+    globalThis.fetch.mockResolvedValue({
+      status: 403,
+      ok: false,
+      clone: () => ({
+        json: async () => ({ code: 'FORBIDDEN' }),
+      }),
+    });
+
+    const res = await apiFetch('/api/conversations', { method: 'POST', body: '{}' });
+    expect(res.status).toBe(403);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('signs out when refresh fails after a 401', async () => {
+    sessionStorage.setItem(STORAGE_KEY, 'old.jwt');
+    sessionStorage.setItem(REFRESH_KEY, 'refresh-tok');
+    sessionStorage.setItem(CSRF_KEY, 'csrf-abc');
+
+    globalThis.fetch
+      .mockResolvedValueOnce({ status: 401, ok: false })
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ csrfToken: 'post-logout-csrf' }) });
+
+    const replace = vi.fn();
+    const original = globalThis.location;
+    delete globalThis.location;
+    globalThis.location = { pathname: '/dashboard', replace };
+    try {
+      await apiFetch('/api/experts');
+      expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+      expect(replace).toHaveBeenCalledWith('/login');
+    } finally {
+      globalThis.location = original;
+    }
+  });
+
+  test('fetches CSRF before a mutating request when none is cached', async () => {
+    globalThis.fetch
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ csrfToken: 'boot-csrf' }) })
+      .mockResolvedValueOnce({ status: 200, ok: true });
+
+    await apiFetch('/api/conversations', { method: 'POST', body: '{}' });
+
+    expect(globalThis.fetch.mock.calls[0][0]).toBe('/api/csrf-token');
+    const [, opts] = globalThis.fetch.mock.calls[1];
+    expect(opts.headers['x-csrf-token']).toBe('boot-csrf');
+  });
 });
 
 describe('fetchCsrfToken', () => {

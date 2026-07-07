@@ -60,6 +60,14 @@ describe('VerifyEmail (FR-02 / SR-19)', () => {
       expect(screen.getByText(/verification failed/i)).toBeInTheDocument();
     });
   });
+
+  test('shows a generic error when the verify request throws', async () => {
+    mockApiFetch.mockRejectedValue(new Error('network'));
+    renderWithToken('tok123');
+    await waitFor(() => {
+      expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
+    });
+  });
 });
 
 describe('TotpSetup (SR-21)', () => {

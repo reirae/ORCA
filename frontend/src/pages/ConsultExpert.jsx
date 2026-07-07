@@ -26,7 +26,7 @@ export default function ConsultExpert() {
   const [search, setSearch] = useState("");
 
   const selectedId = useMemo(() => {
-    const id = parseInt(searchParams.get("c"), 10);
+    const id = Number.parseInt(searchParams.get("c"), 10);
     return Number.isInteger(id) ? id : null;
   }, [searchParams]);
 

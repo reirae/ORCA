@@ -28,7 +28,7 @@ const pool = require('../db/pool').promise();
 const ENC_KEY_HEX = process.env.TOTP_ENC_KEY;
 
 function getKey() {
-  if (!ENC_KEY_HEX || ENC_KEY_HEX.length !== 64) {
+  if (!ENC_KEY_HEX || ENC_KEY_HEX?.length !== 64) {
     throw new Error('TOTP_ENC_KEY must be set to 64 hex chars (32 bytes).');
   }
   return Buffer.from(ENC_KEY_HEX, 'hex');

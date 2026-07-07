@@ -7,9 +7,8 @@ WORKDIR /app
 RUN apk add --no-cache ffmpeg
 
 COPY package*.json ./
-RUN npm ci --only=production
-
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN npm ci --only=production && \
+    addgroup -S appgroup && adduser -S appuser -G appgroup
 COPY . .
 RUN chown -R root:root /app && mkdir -p logs uploads && chown -R appuser:appgroup logs uploads
 USER appuser

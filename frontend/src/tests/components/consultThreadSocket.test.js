@@ -8,14 +8,14 @@ import {
 } from "../../components/consultThreadSocket";
 
 function createSocket() {
-  const handlers = {};
+  const handlers = new Map();
   return {
     on: vi.fn((event, fn) => {
-      handlers[event] = fn;
+      handlers.set(event, fn);
     }),
     emit: vi.fn(),
     trigger(event, payload) {
-      handlers[event]?.(payload);
+      handlers.get(event)?.(payload);
     },
   };
 }

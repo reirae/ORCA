@@ -94,6 +94,52 @@ describe('auth/api.js fetch wrapper', () => {
     // The refreshed token should now be stored.
     expect(sessionStorage.getItem(STORAGE_KEY)).toBe('new.jwt');
   });
+
+  test('on 401 redirects a regular user to /login (SR-18 sign-out)', async () => {
+    const replace = vi.fn();
+    const original = globalThis.location;
+    // Replace location with a stub exposing pathname + replace().
+    delete globalThis.location;
+    globalThis.location = { pathname: '/dashboard', replace };
+    try {
+      sessionStorage.setItem(STORAGE_KEY, 'dead.jwt');
+      globalThis.fetch.mockResolvedValue({ status: 401, ok: false });
+      await apiFetch('/api/experts');
+      expect(replace).toHaveBeenCalledWith('/login');
+    } finally {
+      globalThis.location = original;
+    }
+  });
+
+  test('on 401 redirects an admin-panel user to the admin login', async () => {
+    const replace = vi.fn();
+    const original = globalThis.location;
+    delete globalThis.location;
+    globalThis.location = { pathname: '/adm/managementDashboard', replace };
+    try {
+      sessionStorage.setItem(STORAGE_KEY, 'dead.jwt');
+      globalThis.fetch.mockResolvedValue({ status: 401, ok: false });
+      await apiFetch('/api/admin/users');
+      expect(replace).toHaveBeenCalledWith('/adm/administratorLogin');
+    } finally {
+      globalThis.location = original;
+    }
+  });
+
+  test('on 401 does NOT redirect if already on a login page (no loop)', async () => {
+    const replace = vi.fn();
+    const original = globalThis.location;
+    delete globalThis.location;
+    globalThis.location = { pathname: '/login', replace };
+    try {
+      sessionStorage.setItem(STORAGE_KEY, 'dead.jwt');
+      globalThis.fetch.mockResolvedValue({ status: 401, ok: false });
+      await apiFetch('/api/experts');
+      expect(replace).not.toHaveBeenCalled();
+    } finally {
+      globalThis.location = original;
+    }
+  });
 });
 
 describe('fetchCsrfToken', () => {
